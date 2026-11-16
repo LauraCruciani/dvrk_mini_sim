@@ -51,3 +51,38 @@ def test_mtm():
 if __name__ == "__main__":
     test_mtm()
     print("MTM tests passed")
+
+
+def test_segment_distances():
+    from dvrk_sim.kinematics import segment_distances
+    rng = np.random.default_rng(4)
+    A1, B1, A2, B2 = (rng.normal(size=(5, 3)) for _ in range(4))
+    d = segment_distances(A1, B1, A2, B2)
+    s = np.linspace(0, 1, 401)
+    for i in range(5):
+        for j in range(5):
+            P = A1[i] + (B1[i] - A1[i]) * s[:, None]
+            Q = A2[j] + (B2[j] - A2[j]) * s[:, None]
+            brute = np.min(np.linalg.norm(P[:, None] - Q[None], axis=-1))
+            assert d[i, j] <= brute + 1e-12 and brute - d[i, j] < 5e-3, (d[i, j], brute)
+    # parallel and touching segments
+    assert abs(segment_distances([[0, 0, 0]], [[1, 0, 0]], [[0, 1, 0]], [[1, 1, 0]])[0, 0] - 1) < 1e-12
+    assert segment_distances([[0, 0, 0]], [[1, 0, 0]], [[0.5, -1, 0]], [[0.5, 1, 0]])[0, 0] < 1e-12
+
+
+def test_home_is_free():
+    from dvrk_sim.kinematics import (PSM_BASES, PSM_HOME, ECM_HOME, ecm_forward, instrument_capsules,
+                                     instrument_clearances, capsule_clearance, wall_height, ENDOSCOPE_R)
+    caps = {}
+    for a, base in PSM_BASES.items():
+        tip, R, _ = forward(PSM_HOME[a])
+        caps[a] = instrument_capsules(tip + base, R, 0.6, base)
+        assert min(instrument_clearances(caps[a])) > 0, a
+    assert capsule_clearance(caps["PSM1"], caps["PSM2"]) > 0
+    p, _ = ecm_forward(ECM_HOME)
+    assert wall_height(p[0], p[1]) - p[2] - ENDOSCOPE_R > 0
+
+
+if __name__ == "__main__":
+    test_segment_distances(); test_home_is_free()
+    print("collision geometry tests passed")

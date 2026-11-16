@@ -3,6 +3,8 @@
 (function () {
 "use strict";
 const MM = 1000, FLOOR = -130;
+const WALL = [260, 220, 118];        // semi-axes of the cavity, as in kinematics.py (WALL_AXES)
+const GREEN = 0x35d08a;              // green always means "done"
 const COLORS = { PSM1: 0xd9822b, PSM2: 0x3f9b4a };          // orange right, green left
 const HEX = { PSM1: "#e08a36", PSM2: "#4fb35a", MTMR: "#e08a36", MTML: "#4fb35a" };
 const SIDES = ["MTML", "MTMR"], ARM = { MTML: "PSM2", MTMR: "PSM1" };
@@ -85,7 +87,7 @@ scene.add(floor);
 const domeTex = tissueTexture("#a4473f", 11); domeTex.repeat.set(4, 3);
 const dome = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 40),
   new THREE.MeshPhongMaterial({ map: domeTex, side: THREE.BackSide, shininess: 20, specular: 0x331515 }));
-dome.scale.set(260, 220, 140);
+dome.scale.set(...WALL);
 dome.position.set(0, 0, FLOOR);
 scene.add(dome);
 
@@ -106,7 +108,7 @@ function makeInstrument(color) {
     collar: shadowed(new THREE.Mesh(new THREE.CylinderGeometry(4.3, 4.3, 1, 32), metal)),
     clevis: shadowed(new THREE.Mesh(new THREE.CylinderGeometry(2.4, 3.6, 1, 24), metal)),
     port: new THREE.Mesh(new THREE.CylinderGeometry(6, 6, 1, 32, 1, true), darkMetal),
-    wrist: new THREE.Group(), pivots: [],
+    wrist: new THREE.Group(), pivots: [], mat,
   };
   o.port.material = darkMetal.clone(); o.port.material.side = THREE.DoubleSide;
   const knuckle = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.3, 4.6, 20), metal));
@@ -143,6 +145,8 @@ function updateInstrument(o, a) {
   o.wrist.position.copy(wrist);
   o.wrist.quaternion.copy(rotFromRows(a.R));
   for (const [p, s] of o.pivots) p.rotation.y = s * a.jaw / 2;
+  const hit = (a.collision || []).some(c => c !== "tissue");     // other instrument or wall: glow red
+  o.mat.emissive.setHex(hit ? 0x8a0d0d : 0x000000);
 }
 
 // --------------------------------------------------------------- the scene
@@ -169,12 +173,12 @@ const targetPool = pool(() => {
 });
 const beadPool = pool(() => {
   const m = shadowed(new THREE.Mesh(new THREE.SphereGeometry(2.5, 24, 16),
-    new THREE.MeshPhongMaterial({ color: 0xf28c28, shininess: 90, specular: 0x666666 })));
+    new THREE.MeshPhongMaterial({ color: 0x3d8bff, shininess: 90, specular: 0x666666 })));
   scene.add(m); return m;
 });
 const ringPool = pool(() => {
   const m = new THREE.Mesh(new THREE.TorusGeometry(7, 0.8, 12, 48),
-    new THREE.MeshPhongMaterial({ color: 0x35d08a, emissive: 0x0c3d24, shininess: 60 }));
+    new THREE.MeshPhongMaterial({ color: 0x3d8bff, emissive: 0x000000, shininess: 60 }));
   m.receiveShadow = true; scene.add(m); return m;
 });
 
@@ -249,6 +253,13 @@ function drawPads(st) {
 // --------------------------------------------------------------- the HUD
 const hud = document.getElementById("hud"), task = document.getElementById("task");
 const tag = (on, text, cls = "on") => `<span class="tag ${on ? cls : "off"}">${text}</span>`;
+const WHAT = { tissue: "on the tissue", wall: "on the abdominal wall", PSM1: "hits PSM1", PSM2: "hits PSM2" };
+function collisionTags(st) {
+  const out = [];
+  for (const a of ["PSM1", "PSM2"]) for (const c of ((st.arms[a] || {}).collision || []))
+    out.push(tag(true, `${a} ${WHAT[c] || c}`, c === "tissue" ? "on" : "clash"));
+  return out.length ? out.join(" ") + "<br>" : "";
+}
 function updateHud(st) {
   const tp = st.teleop.MTMR || {}, tl = st.teleop.MTML || {};
   const follow = (tp.state === "FOLLOWING") && (tl.state === "FOLLOWING");
@@ -256,15 +267,16 @@ function updateHud(st) {
     `${tag(follow, follow ? "GO" : (tp.state || "WAITING"), "go")} ${tag(st.clutch, "CLUTCH")} ${tag(st.camera_mode, "CAMERA")}<br>` +
     `active hand <b style="color:${HEX[st.active]}">${st.active} → ${ARM[st.active]}</b><br>` +
     `<span style="opacity:.7">press ? for the keys</span><br>` +
+    collisionTags(st) +
     `scale <b>${tp.scale ?? "?"}:1</b> · tremor <b>${st.tremor ? "on" : "off"}</b> · filter <b>${tp.tremor_filter ? "on" : "off"}</b> · delay <b>${(tp.latency_ms || 0).toFixed(0)} ms</b>`;
   const s = st.status || {};
   if (s.state === "running" && s.task === "reach")
-    task.innerHTML = `Reach: target <b>${s.index + 1}/${s.n}</b> · ${s.time_s.toFixed(1)} s · path ${s.path_mm.toFixed(0)} mm · contacts ${s.contacts}`;
+    task.innerHTML = `Reach: target <b>${s.index + 1}/${s.n}</b> · ${s.time_s.toFixed(1)} s · path ${s.path_mm.toFixed(0)} mm · contacts ${s.contacts} · clashes ${s.clashes ?? 0}`;
   else if (s.state === "running" && s.task === "handover")
-    task.innerHTML = `Handover: placed <b>${s.beads.filter(b => b.placed).length}/${s.beads.length}</b> · ${s.time_s.toFixed(1)} s · handovers ${s.handovers} · drops ${s.drops} · contacts ${s.contacts}<br>` +
-      `<span style="opacity:.75">pick with PSM2 (green, left hand), pass to PSM1 (orange, right hand), put down in the green ring</span>`;
+    task.innerHTML = `Handover: placed <b>${s.beads.filter(b => b.placed).length}/${s.beads.length}</b> · ${s.time_s.toFixed(1)} s · handovers ${s.handovers} · drops ${s.drops} · contacts ${s.contacts} · clashes ${s.clashes ?? 0}<br>` +
+      `<span style="opacity:.75">pick with PSM2 (green, left hand), pass to PSM1 (orange, right hand), put each bead down in the ring of its own colour: both turn green</span>`;
   else if (s.state === "done")
-    task.innerHTML = `<span class="tag go">TASK COMPLETE</span> ${s.task}: ${s.time_s.toFixed(1)} s · path ${s.path_mm.toFixed(0)} mm · ${s.contacts} contact(s)` +
+    task.innerHTML = `<span class="tag go">TASK COMPLETE</span> ${s.task}: ${s.time_s.toFixed(1)} s · path ${s.path_mm.toFixed(0)} mm · ${s.contacts} contact(s) · ${s.clashes ?? 0} clash(es)` +
       (s.task === "handover" ? ` · ${s.handovers} handovers · ${s.drops} drops` : "") + " · N or B to try again";
   else task.innerHTML = "N: reach task · B: handover task";
 }
@@ -297,7 +309,11 @@ function apply(st) {
       p.multiplyScalar(1 / b.held.length);
     }
     bm[i].position.copy(p);
-    bm[i].material.color.setHex(b.placed ? 0x35d08a : b.held.length ? 0xffb347 : 0xf28c28);
+    const col = b.placed ? GREEN : new THREE.Color(b.color || "#3d8bff").getHex();   // each bead matches its ring
+    bm[i].material.color.setHex(col);
+    bm[i].material.emissive.setHex(b.held.length && !b.placed ? 0x444444 : 0x000000);  // held: brighter
+    rm[i].material.color.setHex(col);
+    rm[i].material.emissive.setHex(b.placed ? 0x0c3d24 : 0x000000);
     rm[i].position.copy(v3(b.goal)).add(new THREE.Vector3(0, 0, 0.3));
   });
   for (const m of vesselMeshes) m.material.emissive.setHex(st.contact ? 0x991111 : 0x000000);

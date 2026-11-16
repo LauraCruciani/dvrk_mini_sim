@@ -205,3 +205,89 @@ def ecm_forward(q):
 def view_rotation(Rc):
     """Columns: image right, viewing direction, image up (the MTM's x, y, z)."""
     return np.column_stack([Rc[:, 0], Rc[:, 2], -Rc[:, 1]])
+
+
+# ================================================================ collisions
+# Simple geometric collision model, shared by the PSM and ECM nodes and drawn
+# the same way by the web console. All in the world frame, metres.
+#
+#   tissue          the floor of the cavity, z = TISSUE_Z, flat where the work
+#                   happens and with gentle folds further out (the same folds
+#                   the endoscope view draws)
+#   abdominal wall  the inside of the dome: an ellipsoid centred on the tissue,
+#                   whose top is WALL_TOP below the RCMs. The RCMs (the ports)
+#                   lie inside the wall, as on a patient.
+#   instruments     each instrument is a chain of capsules (segments with a
+#                   radius): shaft, clevis, and the two jaws
+#
+# Nothing here computes forces: an arm simply refuses the part of a motion that
+# would make it penetrate an obstacle, and reports what it is touching.
+TISSUE_Z = -0.130
+WALL_AXES = np.array([0.260, 0.220, 0.118])      # semi-axes of the cavity (x, y, z)
+WALL_TOP = TISSUE_Z + WALL_AXES[2]               # -12 mm: inner surface above the patient's midline
+SHAFT_R, CLEVIS_R, JAW_R = 0.0042, 0.0030, 0.0008
+CLEVIS_LEN = 0.007                               # metal part between the shaft and the wrist
+ENDOSCOPE_R = 0.0042
+
+
+def tissue_height(x, y):
+    """z of the tissue surface under (x, y)."""
+    X, Y = x * 1000.0, y * 1000.0
+    w = min(1.0, max(0.0, (np.hypot(X, Y) - 70.0) / 60.0))
+    return TISSUE_Z + w * (6 * np.sin(X / 23) * np.cos(Y / 31) + 4 * np.sin((X + Y) / 17)) / 1000.0
+
+
+def wall_height(x, y):
+    """z of the inner surface of the abdominal wall above (x, y); -inf outside the cavity."""
+    k = 1.0 - (x / WALL_AXES[0]) ** 2 - (y / WALL_AXES[1]) ** 2
+    return TISSUE_Z + WALL_AXES[2] * np.sqrt(k) if k > 0 else -np.inf
+
+
+def instrument_capsules(tip, R, jaw, rcm):
+    """Capsules (a, b, radius) of one instrument, from its world tip pose and jaw angle."""
+    tip, R, rcm = (np.asarray(v, dtype=float) for v in (tip, R, rcm))
+    wrist = tip - R[:, 2] * JAW_LENGTH
+    u = wrist - rcm
+    u /= max(np.linalg.norm(u), 1e-9)
+    shaft_end = wrist - CLEVIS_LEN * u
+    h = jaw / 2.0
+    caps = [(rcm, shaft_end, SHAFT_R), (shaft_end, wrist, CLEVIS_R)]
+    for s in (1.0, -1.0):                         # the two jaws, as drawn by the endoscope view
+        caps.append((wrist, wrist + R @ np.array([np.sin(s * h), 0.0, np.cos(s * h)]) * JAW_LENGTH, JAW_R))
+    return caps
+
+
+def segment_distances(A1, B1, A2, B2):
+    """Distances between every segment A1[i]-B1[i] and every segment A2[j]-B2[j] (closest points)."""
+    p1, q1 = np.asarray(A1)[:, None, :], np.asarray(B1)[:, None, :]
+    p2, q2 = np.asarray(A2)[None, :, :], np.asarray(B2)[None, :, :]
+    d1, d2, r = q1 - p1, q2 - p2, p1 - p2
+    a = np.maximum(np.sum(d1 * d1, -1), 1e-12)
+    e = np.maximum(np.sum(d2 * d2, -1), 1e-12)
+    b, c, f = np.sum(d1 * d2, -1), np.sum(d1 * r, -1), np.sum(d2 * r, -1)
+    den = a * e - b * b
+    s = np.where(den > 1e-12, np.clip((b * f - c * e) / np.where(den > 1e-12, den, 1.0), 0.0, 1.0), 0.0)
+    t = (b * s + f) / e
+    s = np.where(t < 0, np.clip(-c / a, 0.0, 1.0), np.where(t > 1, np.clip((b - c) / a, 0.0, 1.0), s))
+    t = np.clip(t, 0.0, 1.0)
+    diff = (p1 + d1 * s[..., None]) - (p2 + d2 * t[..., None])
+    return np.linalg.norm(diff, axis=-1)
+
+
+def capsule_clearance(caps1, caps2):
+    """Smallest gap between two sets of capsules (negative = they overlap)."""
+    A1, B1, r1 = (np.array([c[i] for c in caps1]) for i in range(3))
+    A2, B2, r2 = (np.array([c[i] for c in caps2]) for i in range(3))
+    return float(np.min(segment_distances(A1, B1, A2, B2) - r1[:, None] - r2[None, :]))
+
+
+def instrument_clearances(caps):
+    """Gaps of one instrument to the tissue and to the abdominal wall (negative = penetration).
+
+    Only the parts inside the cavity count: the clevis and the jaws. The shaft
+    runs through the port, where it is supposed to touch the wall.
+    """
+    pts = [(caps[1][0], CLEVIS_R), (caps[1][1], CLEVIS_R)] + [(c[1], JAW_R) for c in caps[2:]]
+    tissue = min(p[2] - r - tissue_height(p[0], p[1]) for p, r in pts)
+    wall = min(wall_height(p[0], p[1]) - p[2] - r for p, r in pts)
+    return tissue, wall

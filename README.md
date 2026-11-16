@@ -14,7 +14,8 @@ installing ROS, Linux or anything beyond NumPy and Matplotlib.
 > PSM and MTM kinematics are simplified (an ideal
 > remote center of motion, joint conventions not identical to the dVRK),
 > there is no dynamics, grasping is a simple rule rather than contact
-> physics, and the camera is a single (not stereo) endoscope.
+> physics, collisions only stop the motion (no forces, see
+> [Collisions](#collisions)), and the camera is a single (not stereo) endoscope.
 
 ![PSM1 doing the reach task on its own (examples/ex3_autonomous_targets.py), sped up](docs/images/autonomous_reach.gif)
 
@@ -105,20 +106,45 @@ page sends mouse and keyboard events back.
 
 A classic bimanual exercise. For each orange bead:
 
-![Handover task: three orange beads on the left and three green rings on the right](docs/images/handover_task.jpg)
+![Handover task: three beads on the left and three rings on the right](docs/images/handover_task.jpg)
+
+Each bead has its own ring, drawn **in the same colour** (blue, magenta,
+yellow…): a bead counts only in its own ring. When it is placed, bead and
+ring turn **green**. Green always means "done".
 
 
 1. bring PSM2 (left hand) onto the bead and close its jaws;
 2. lift it and bring PSM1 (right hand) next to it, close PSM1's jaws;
 3. open PSM2's jaws: the bead now belongs to PSM1 (one handover);
-4. put the bead down inside its green ring and open PSM1's jaws.
+4. put the bead down inside the ring of its colour and open PSM1's jaws.
 
-A bead released anywhere else falls on the tissue and counts as a drop; you
+A bead released anywhere else (also in a ring of another colour) falls on
+the tissue and counts as a drop; you
 can pick it up again. In the classic console the bottom line shows the
 distance from the active instrument to the nearest bead along each axis, which
 helps with depth on a flat screen. In the endoscope view, the shadows of the
 instruments on the tissue are your best depth cue. Use G on the holding hand
 before switching hands.
+
+### Collisions
+
+The instruments cannot go through the tissue, the abdominal wall or each
+other, and the endoscope cannot be pulled back into the wall. The model is
+geometric (`dvrk_sim/kinematics.py`): each instrument is a chain of capsules
+(shaft, clevis, two jaws), the tissue is the floor of the cavity and the wall
+is the inside of the dome, with the ports (the RCMs) inside it. Each PSM node
+refuses the part of a motion that would push its instrument into an
+obstacle; a tip command below the tissue is projected onto it, so the tip
+slides along the surface. There are no forces: think of it as a safety layer
+or a virtual fixture, not as contact physics.
+
+What an instrument touches is published on `/PSM1/collision` and shown in the
+view: an amber tag when it rests on the tissue, a red tag and a red glow when
+it hits the other instrument or the wall. The scene counts the clashes
+between the instruments as an error, except when the two jaws meet around a
+bead during a handover. Vessels are still soft: you can touch them, and each
+contact is counted. `python -m minros param set PSM1 collisions false` turns
+the checks off for one arm.
 
 ## Look inside, like with ROS
 
@@ -154,6 +180,7 @@ Every topic below exists for both pairs: replace MTMR/PSM1 with MTML/PSM2.
 | `/PSM1/measured_cp` | PoseStamped | PSM1 → everyone, world frame, 100 Hz |
 | `/PSM1/local/measured_cp` | PoseStamped | PSM1 → everyone, RCM frame, 50 Hz |
 | `/PSM1/measured_js` | JointState | PSM1 → everyone, 50 Hz |
+| `/PSM1/collision` | String (JSON) | PSM1 → everyone: `["tissue", "wall", "PSM2"]` or `[]` |
 | `/MTMR_PSM1/state` | String (JSON) | teleop → console |
 | `/MTMR_PSM1/set_scale` | Float64 | anyone → teleop |
 | `/scene/start` | String | `"reach"` or `"handover"` → scene |
@@ -162,7 +189,7 @@ Every topic below exists for both pairs: replace MTMR/PSM1 with MTML/PSM2.
 | `/ECM/servo_jp` | JointState | console or your code → ECM |
 | `/scene/targets` | PoseArray | scene → everyone |
 | `/scene/vessels` | PolylineArray | scene → everyone |
-| `/scene/status` | String (JSON) | scene → everyone (task, timing, beads, counts) |
+| `/scene/status` | String (JSON) | scene → everyone (task, timing, beads and their colours, counts) |
 
 Coordinates are in metres. `measured_cp` and `servo_cp` use a shared world
 frame (x right, y forward, z up, abdominal wall at z = 0, patient below);
@@ -220,7 +247,7 @@ minros.spin(node)                          rclpy.spin(node)
 ```
 launch.py               starts everything
 minros/                 the miniature ROS (broker, node API, messages, CLI)
-dvrk_sim/kinematics.py  PSM kinematics around the RCM, arm bases, MTM model
+dvrk_sim/kinematics.py  PSM kinematics around the RCM, arm bases, MTM model, collision geometry
 dvrk_sim/psm_node.py    simulated PSM (one process per arm)
 dvrk_sim/teleop_node.py MTM -> PSM teleoperation: scale, clutch, filter, delay
 dvrk_sim/scene_node.py  reach and handover tasks, vessels, grasping, scoring
@@ -232,7 +259,7 @@ web/                    the endoscope view page (index.html, app.js, three.js)
 examples/               exercises for students
 docs/images/            screenshots and diagram used in this README
 LICENSE, CITATION.cff   MIT license and how to cite this repository
-tests/                  kinematics tests for PSM and MTM (python tests/test_kinematics.py)
+tests/                  kinematics and collision geometry tests (python tests/test_kinematics.py)
 ```
 
 ## How to cite
