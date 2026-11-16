@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>dVRK mini simulator – endoscope view</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0606; overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #f1ece9; }
+  #view { position: fixed; inset: 0; }
+  #view canvas { display: block; }
+  .box { position: fixed; background: rgba(12, 14, 16, .72); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 8px; padding: 8px 11px; font-size: 13px; line-height: 1.45; pointer-events: none; }
+  #hud { top: 12px; left: 12px; }
+  #hud b { font-weight: 650; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-weight: 700; font-size: 12px; margin-right: 4px; }
+  .on { background: #e7b24a; color: #1b1305; }
+  .off { background: rgba(255,255,255,.12); color: #cfc8c4; }
+  .go { background: #2bbf7a; color: #052814; }
+  #task { top: 12px; right: 12px; text-align: right; font-size: 13px; max-width: min(460px, calc(100vw - 380px)); }
+  #pads { bottom: 12px; right: 12px; padding: 6px; }
+  #mtmLabel { bottom: 214px; left: 12px; padding: 3px 9px; font-size: 12px; }
+  #help { top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 13px; line-height: 1.9; padding: 14px 18px; }
+  #help kbd { font: 600 11px ui-monospace, monospace; background: rgba(255,255,255,.14); border-radius: 3px; padding: 0 4px; }
+  #sit { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.45); cursor: pointer; }
+  #sit div { background: rgba(12,14,16,.9); border: 1px solid rgba(255,255,255,.18); border-radius: 12px;
+    padding: 22px 28px; max-width: 460px; text-align: center; line-height: 1.5; }
+  #sit h1 { margin: 0 0 8px; font-size: 22px; }
+  #flash { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 160px 40px rgba(255,30,30,.0); transition: box-shadow .15s; }
+  #flash.hit { box-shadow: inset 0 0 160px 40px rgba(255,30,30,.55); }
+  #offline { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); display: none; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="flash"></div>
+<div class="box" id="hud"></div>
+<div class="box" id="help">
+  <kbd>Tab</kbd> switch hand · <kbd>left button</kbd> jaws · <kbd>G</kbd> keep jaws closed<br>
+  <kbd>wheel</kbd> depth · <kbd>J L I K U O</kbd> wrist · <kbd>H</kbd> reset wrist<br>
+  <kbd>C</kbd>/<kbd>space</kbd> clutch · <kbd>V</kbd> camera pedal · <kbd>arrows</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> camera<br>
+  <kbd>1 2 3 5</kbd> scale · <kbd>T</kbd> tremor · <kbd>F</kbd> filter · <kbd>+ −</kbd> delay<br>
+  <kbd>N</kbd> reach task · <kbd>B</kbd> handover task · <kbd>Esc</kbd> stand up · <kbd>?</kbd> hide this help
+</div>
+<div class="box" id="mtmLabel">Masters, seen from behind you</div>
+<canvas class="box" id="pads" width="300" height="130"></canvas>
+<div class="box" id="task"></div>
+<div class="box" id="offline">Waiting for the simulator… start it with <b>python launch.py</b></div>
+<div id="sit"><div>
+  <h1>Sit at the console</h1>
+  Click to take the masters. The mouse moves the active hand, the wheel moves it in depth,
+  the left button closes its jaws and Tab switches hand. Press <b>?</b> for all the keys, Esc to stand up.
+</div></div>
+<script src="three.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
