@@ -11,7 +11,7 @@ Same ideas and the same topic names they would use on a
 real dVRK (`/PSM1/measured_cp`, `/PSM1/servo_cp`, `/MTMR_PSM1/...`), without
 installing ROS, Linux or anything beyond NumPy and Matplotlib.
 
-> This is a teaching model. PSM and MTM kinematics are simplified (an ideal
+> PSM and MTM kinematics are simplified (an ideal
 > remote center of motion, joint conventions not identical to the dVRK),
 > there is no dynamics, grasping is a simple rule rather than contact
 > physics, and the camera is a single (not stereo) endoscope.
