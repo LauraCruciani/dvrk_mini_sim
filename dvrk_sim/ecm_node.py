@@ -9,13 +9,22 @@ x points to the right of the image and y to the bottom. The teleoperation
 nodes read this pose to map hand motion in the image: moving your hand to
 the right moves the instrument to the right on screen, wherever the camera
 points. That is what makes a real console feel natural.
+
+The endoscope cannot be pulled back into the abdominal wall: a motion that
+would push the camera tip into it is refused (see kinematics.py).
 """
 import time
 import numpy as np
 
 import minros
 from minros.msg import JointState, PoseStamped, String, Header
-from .kinematics import (ECM_JOINT_NAMES, ECM_HOME, ECM_LOWER, ECM_UPPER, ecm_forward, pose_to_msg)
+from .kinematics import (ECM_JOINT_NAMES, ECM_HOME, ECM_LOWER, ECM_UPPER, ecm_forward, pose_to_msg,
+                         wall_height, ENDOSCOPE_R)
+
+
+def wall_gap(q):
+    p, _ = ecm_forward(q)
+    return wall_height(p[0], p[1]) - p[2] - ENDOSCOPE_R
 
 
 class ECM(minros.Node):
@@ -43,7 +52,17 @@ class ECM(minros.Node):
         now = time.monotonic()
         dt = min(0.1, now - self.last)
         self.last = now
-        self.q = self.q + np.clip(self.goal - self.q, -self.vmax * dt, self.vmax * dt)
+        dq = np.clip(self.goal - self.q, -self.vmax * dt, self.vmax * dt)
+        before = wall_gap(self.q)
+        ok = lambda q: (g := wall_gap(q)) >= 0 or g >= before - 1e-9
+        if ok(self.q + dq):
+            self.q = self.q + dq
+        else:                                               # keep only the joints that stay clear
+            for i in range(4):
+                trial = self.q.copy()
+                trial[i] += dq[i]
+                if ok(trial):
+                    self.q = trial
         p, Rc = ecm_forward(self.q)
         stamp = time.time()
         self.pub_cp.publish(pose_to_msg(p, Rc, "world", stamp))

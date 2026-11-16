@@ -5,10 +5,15 @@ Two tasks:
   handover  pick up each bead with the LEFT arm (PSM2), pass it to the RIGHT
             arm (PSM1) and put it down on its ring. A classic bimanual
             training exercise.
-Both tasks count contacts with the blood vessels.
+Both tasks count contacts with the blood vessels and clashes between the
+two instruments.
+
+Each bead has its own ring, drawn in the same colour: a bead counts as placed
+only in its own ring. Once placed, bead and ring turn green.
 
   subscribes  /PSM1/measured_cp, /PSM2/measured_cp          PoseStamped
               /PSM1/jaw/measured_js, /PSM2/jaw/measured_js  JointState
+              /PSM1/collision, /PSM2/collision              String (JSON list)
               /scene/start      String   "reach" or "handover"
   publishes   /scene/targets    PoseArray      remaining reach targets, 5 Hz
               /scene/vessels    PolylineArray  vessel centre lines and radii, 1 Hz
@@ -38,6 +43,8 @@ REST_Z = FLOOR + BEAD_R   # height of a bead lying on the tissue
 GRASP_DIST = 0.006
 JAW_CLOSED = 0.35
 PLACE_TOL = 0.007
+# one colour per bead and its ring; never green (green means "placed") nor the instruments' colours
+BEAD_COLORS = ["#3d8bff", "#e254d6", "#f5d33b", "#2fd3e6", "#f2f2f2", "#9a6bff"]
 
 
 def _vessel(a, b, bend, n=30):
@@ -79,6 +86,9 @@ class Scene(minros.Node):
         self.t0 = self.elapsed = 0.0
         self.path = 0.0
         self.contacts, self.drops, self.handovers = 0, 0, 0
+        self.clashes = 0
+        self.collision = {a: [] for a in ARMS}
+        self.in_clash = False
         self.in_contact = False
         self.prev_tip = {a: None for a in ARMS}
         self.last = time.monotonic()
@@ -86,6 +96,7 @@ class Scene(minros.Node):
         for a in ARMS:
             self.create_subscription(PoseStamped, f"/{a}/measured_cp", self._tip_cb(a), 1)
             self.create_subscription(JointState, f"/{a}/jaw/measured_js", self._jaw_cb(a), 1)
+            self.create_subscription(String, f"/{a}/collision", self._collision_cb(a), 10)
         self.create_subscription(String, "/scene/start", self.on_start, 10)
         self.pub_targets = self.create_publisher(PoseArray, "/scene/targets", 10)
         self.pub_vessels = self.create_publisher(PolylineArray, "/scene/vessels", 10)
@@ -101,6 +112,26 @@ class Scene(minros.Node):
         def cb(msg):
             self.tip[arm], _ = msg_to_pose(msg)
         return cb
+
+    def _collision_cb(self, arm):
+        def cb(msg):
+            self.collision[arm] = json.loads(msg.data or "[]")
+            clash = any(b in self.collision[a] for a in ARMS for b in ARMS if b != a)
+            if clash and not self.in_clash and self.passing_bead():
+                return                      # jaws meeting around a bead: that is a handover, not a clash
+            if clash and not self.in_clash:
+                if self.state == "running":
+                    self.clashes += 1
+                self.get_logger().warn("the instruments collided!")
+            self.in_clash = clash
+        return cb
+
+    def passing_bead(self):
+        """True while a held bead sits between both tips (the two jaws are allowed to meet there)."""
+        if self.task != "handover" or any(self.tip[a] is None for a in ARMS):
+            return False
+        return any(b["holders"] and all(np.linalg.norm(self.tip[a] - b["p"]) < 2 * GRASP_DIST for a in ARMS)
+                   for b in self.beads)
 
     def _jaw_cb(self, arm):
         def cb(msg):
@@ -137,7 +168,8 @@ class Scene(minros.Node):
                 continue
             if any(np.linalg.norm(start - b["p"]) < 0.015 or np.linalg.norm(goal - b["goal"]) < 0.018 for b in beads):
                 continue
-            beads.append({"p": start, "goal": goal, "holders": [], "placed": False, "by": set()})
+            beads.append({"p": start, "goal": goal, "holders": [], "placed": False, "by": set(),
+                          "color": BEAD_COLORS[len(beads) % len(BEAD_COLORS)]})
         return beads
 
     def on_start(self, msg):
@@ -150,6 +182,7 @@ class Scene(minros.Node):
         self.beads = self.make_beads() if task == "handover" else []
         self.index, self.hold, self.path = 0, 0.0, 0.0
         self.contacts, self.drops, self.handovers = 0, 0, 0
+        self.clashes = 0
         self.t0, self.elapsed = time.monotonic(), 0.0
         self.get_logger().info(f"{task} trial started")
 
@@ -179,12 +212,16 @@ class Scene(minros.Node):
 
     def release(self, b):
         b["p"] = np.array([b["p"][0], b["p"][1], REST_Z])
-        if np.linalg.norm(b["p"][:2] - b["goal"][:2]) < PLACE_TOL:
+        if np.linalg.norm(b["p"][:2] - b["goal"][:2]) < PLACE_TOL:          # its own ring only
             b["placed"] = True
             b["p"] = b["goal"].copy()
             self.get_logger().info("bead placed" + ("" if b["by"] == {"PSM1", "PSM2"} else " (without handover)"))
         else:
             self.drops += 1
+            other = [o for o in self.beads if o is not b and not o["placed"]
+                     and np.linalg.norm(b["p"][:2] - o["goal"][:2]) < PLACE_TOL]
+            if other:
+                self.get_logger().info("wrong ring: each bead goes in the ring of its own colour")
 
     # ----------------------------------------------------------- main loop
     def step(self):
@@ -232,7 +269,8 @@ class Scene(minros.Node):
     def finish(self):
         self.state = "done"
         self.get_logger().info(f"{self.task} done in {self.elapsed:.1f} s, path {self.path * 1000:.0f} mm, "
-                               f"{self.contacts} contact(s), {self.drops} drop(s), {self.handovers} handover(s)")
+                               f"{self.contacts} contact(s), {self.clashes} clash(es), {self.drops} drop(s), "
+                               f"{self.handovers} handover(s)")
 
     # ------------------------------------------------------------- outputs
     def publish_targets(self):
@@ -251,8 +289,10 @@ class Scene(minros.Node):
             "index": self.index, "n": len(self.targets),
             "time_s": round(self.elapsed, 2), "path_mm": round(self.path * 1000, 1),
             "contacts": self.contacts, "drops": self.drops, "handovers": self.handovers,
+            "clashes": self.clashes, "collision": self.collision,
             "hold": round(self.hold / self.get_parameter("hold_s"), 2),
-            "beads": [{"p": r3(b["p"]), "goal": r3(b["goal"]), "held": b["holders"], "placed": b["placed"]}
+            "beads": [{"p": r3(b["p"]), "goal": r3(b["goal"]), "held": b["holders"], "placed": b["placed"],
+                       "color": b["color"]}
                       for b in self.beads]})))
 
 

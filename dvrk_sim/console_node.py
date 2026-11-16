@@ -48,6 +48,7 @@ class ConsoleNode(minros.Node):
         self.tip = {a: None for a in ARM.values()}
         self.R = {a: None for a in ARM.values()}
         self.jaw = {a: 0.6 for a in ARM.values()}
+        self.collision = {a: [] for a in ARM.values()}
         self.trail = {a: collections.deque(maxlen=300) for a in ARM.values()}
         self.ecm_pose = None
         self.ecm_goal = None
@@ -66,6 +67,8 @@ class ConsoleNode(minros.Node):
         for a in ARM.values():
             self.create_subscription(PoseStamped, f"/{a}/measured_cp", self._tip_cb(a), 1)
             self.create_subscription(JointState, f"/{a}/jaw/measured_js", self._jaw_cb(a), 1)
+            self.create_subscription(String, f"/{a}/collision",
+                                     lambda m, a=a: self.collision.__setitem__(a, json.loads(m.data or "[]")), 10)
         self.pub_clutch = self.create_publisher(Bool, "/footpedals/clutch", 10)
         self.pub_start = self.create_publisher(String, "/scene/start", 10)
         self.pub_ecm = self.create_publisher(JointState, "/ECM/servo_jp", 10)
@@ -290,7 +293,8 @@ class ConsoleNode(minros.Node):
                     continue
                 R = self.R[a]
                 arms[a] = {"rcm": r(base), "tip": r(self.tip[a]), "wrist": r(self.tip[a] - R[:, 2] * JAW_LENGTH),
-                           "R": [r(row) for row in R], "jaw": round(float(self.jaw[a]), 4)}
+                           "R": [r(row) for row in R], "jaw": round(float(self.jaw[a]), 4),
+                           "collision": list(self.collision[a])}
             mtm = {}
             for s in SIDES:
                 off = np.array([CONSOLE_X[s], 0.0, 0.0])

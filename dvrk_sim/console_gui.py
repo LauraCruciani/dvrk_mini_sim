@@ -155,9 +155,7 @@ class ConsoleGUI:
         self.future = a.plot([], [], [], "o", ms=8, color="#e0b000", alpha=0.35)[0]
         self.current = a.plot([], [], [], "o", ms=13, color="#e0b000", mec="black")[0]
         self.cur_drop = _line3(a, "#b38a00", lw=1, ls=":")
-        self.beads = a.plot([], [], [], "o", ms=10, color="#f28c28", mec="#7a3d00")[0]
-        self.beads_held = a.plot([], [], [], "o", ms=10, color="#ffb347", mec="black")[0]
-        self.beads_done = a.plot([], [], [], "o", ms=9, color="#2bbf7a", mec="#0d5c36")[0]
+        self.bead_marks = []                 # one marker per bead, in the colour of its ring
         self.rings = []
         self.vessel_lines = []
 
@@ -276,6 +274,8 @@ class ConsoleGUI:
         for arm, v in tips.items():
             if v is not None:
                 self.draw_instrument(arm, v[0], v[1], n.jaw[arm], trails[arm])
+                clash = any(c != "tissue" for c in n.collision.get(arm, []))
+                self.s_art[arm]["in"].set_color("#e01b24" if clash else COLOR[arm])
 
         # reach targets
         if targets:
@@ -290,31 +290,36 @@ class ConsoleGUI:
 
         # beads and their rings
         beads = st.get("beads", []) if st.get("task") == "handover" else []
-        groups = {"free": [], "held": [], "done": []}
-        for b in beads:
+        while len(self.bead_marks) < len(beads):
+            self.bead_marks.append(self.ax.plot([], [], [], "o", ms=10)[0])
+            self.rings.append(_line3(self.ax, "#3d8bff", lw=2))
+        th = np.linspace(0, 2 * np.pi, 24)
+        for i, (mark, ring) in enumerate(zip(self.bead_marks, self.rings)):
+            if i >= len(beads):
+                mark.set_data_3d([], [], [])
+                ring.set_data_3d([], [], [])
+                continue
+            b = beads[i]
             p = np.array(b["p"]) * MM
             if b["held"] and all(tips.get(a) is not None for a in b["held"]):
                 p = np.mean([tips[a][0] for a in b["held"]], axis=0) * MM     # smooth: follow the jaws
-            groups["done" if b["placed"] else "held" if b["held"] else "free"].append(p)
-        for key, line in (("free", self.beads), ("held", self.beads_held), ("done", self.beads_done)):
-            pts = np.array(groups[key]) if groups[key] else np.zeros((0, 3))
-            line.set_data_3d(pts[:, 0], pts[:, 1], pts[:, 2])
-        goals = [np.array(b["goal"]) * MM for b in beads]
-        while len(self.rings) < len(goals):
-            self.rings.append(_line3(self.ax, "#2bbf7a", lw=2))
-        th = np.linspace(0, 2 * np.pi, 24)
-        for i, ring in enumerate(self.rings):
-            if i < len(goals):
-                g = goals[i]
-                ring.set_data_3d(g[0] + 7 * np.cos(th), g[1] + 7 * np.sin(th), np.full_like(th, g[2]))
-            else:
-                ring.set_data_3d([], [], [])
+            col = "#2bbf7a" if b["placed"] else b.get("color", "#3d8bff")     # green = placed
+            mark.set_data_3d([p[0]], [p[1]], [p[2]])
+            mark.set_color(col)
+            mark.set_markeredgecolor("black" if b["held"] else "#333")
+            mark.set_markeredgewidth(2 if b["held"] else 0.8)
+            g = np.array(b["goal"]) * MM
+            ring.set_data_3d(g[0] + 7 * np.cos(th), g[1] + 7 * np.sin(th), np.full_like(th, g[2]))
+            ring.set_color(col)
 
         # heads-up display
         tp = n.teleop.get("MTMR", {})
         states = "  ".join(f"{TELEOP[s]}: {n.teleop.get(s, {}).get('state', '?'):<9}" for s in SIDES)
         lines = [f"{states}  scale {tp.get('scale', '?')}:1  tremor {'ON ' if n.tremor else 'off'}  "
                  f"filter {'ON ' if tp.get('tremor_filter') else 'off'}  delay {tp.get('latency_ms', 0):.0f} ms"]
+        touching = [f"{a} touches {', '.join(n.collision[a])}" for a in n.collision if n.collision[a]]
+        if touching:
+            lines[0] += "   " + "   ".join(touching)
         arm = ARM[active]
         mine = tips.get(arm)
         state = st.get("state", "no scene")
@@ -340,7 +345,7 @@ class ConsoleGUI:
                          f"{st['contacts']} contact(s){extra}. N or B to try again.")
         else:
             lines.append("N: reach task (yellow targets, either arm)    B: handover task (pick with PSM2, "
-                         "pass to PSM1, put down on the green ring)")
+                         "pass to PSM1, put down in the ring of the same colour)")
         self.hud.set_text("\n".join(lines))
         self.hud.set_color("#c0392b" if hot else "black")
         self.fig.canvas.draw_idle()
