@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>dVRK mini simulator – endoscope view</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0606; overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #f1ece9; }
+  #view { position: fixed; inset: 0; }
+  #view canvas { display: block; }
+  .box { position: fixed; background: rgba(12, 14, 16, .72); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 8px; padding: 8px 11px; font-size: 13px; line-height: 1.45; pointer-events: none; }
+  #hud { top: 12px; left: 12px; }
+  #hud b { font-weight: 650; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-weight: 700; font-size: 12px; margin-right: 4px; }
+  .on { background: #e7b24a; color: #1b1305; }
+  .off { background: rgba(255,255,255,.12); color: #cfc8c4; }
+  .go { background: #2bbf7a; color: #052814; }
+  #task { top: 12px; right: 12px; text-align: right; font-size: 13px; max-width: min(460px, calc(100vw - 380px)); }
+  #pads { bottom: 12px; right: 12px; padding: 6px; }
+  #mtmLabel { bottom: 214px; left: 12px; padding: 3px 9px; font-size: 12px; }
+  #ovLabel { bottom: 368px; right: 12px; padding: 3px 9px; font-size: 12px; }
+  .eye { top: 104px; padding: 2px 8px; font-size: 12px; display: none; }
+  #eyeL { left: 12px; } #eyeR { left: calc(50% + 12px); }
+  #help { bottom: 12px; left: 12px; right: 12px; font-size: 12px; line-height: 1.7; padding: 6px 10px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); column-gap: 18px; }
+  #help .h { display: inline-block; min-width: 58px; font-weight: 700; color: #e7b24a; }
+  #help kbd { font: 600 11px ui-monospace, monospace; background: rgba(255,255,255,.14); border-radius: 3px; padding: 0 4px; }
+  #sit { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.45); cursor: pointer; }
+  #sit div { background: rgba(12,14,16,.9); border: 1px solid rgba(255,255,255,.18); border-radius: 12px;
+    padding: 22px 28px; max-width: 460px; text-align: center; line-height: 1.5; }
+  #sit h1 { margin: 0 0 8px; font-size: 22px; }
+  #flash { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 160px 40px rgba(255,30,30,.0); transition: box-shadow .15s; }
+  #flash.hit { box-shadow: inset 0 0 160px 40px rgba(255,30,30,.55); }
+  #offline { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); display: none; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="flash"></div>
+<div class="box" id="hud"></div>
+<div class="box" id="help">
+  <div><span class="h">Mouse</span>in the image · <kbd>wheel</kbd> depth · <kbd>button</kbd> jaws · <kbd>G</kbd> hold jaws · <kbd>Tab</kbd> switch hand</div>
+  <div><span class="h">Keys</span><kbd>A</kbd><kbd>D</kbd> left/right · <kbd>W</kbd><kbd>S</kbd> fwd/back · <kbd>Q</kbd><kbd>E</kbd> up/down · <kbd>JL IK UO</kbd> wrist · <kbd>H</kbd> reset</div>
+  <div><span class="h">Pedals</span><kbd>C</kbd> clutch · <kbd>V</kbd> camera · <kbd>←↑↓→</kbd> <kbd>PgUp</kbd><kbd>PgDn</kbd> <kbd>Home</kbd> move camera</div>
+  <div><span class="h">Options</span><kbd>1235</kbd> scale · <kbd>T</kbd> tremor · <kbd>F</kbd> filter · <kbd>+−</kbd> delay · <kbd>P</kbd> stereo · <kbd>M</kbd> overview</div>
+  <div><span class="h">Tasks</span><kbd>N</kbd> reach · <kbd>B</kbd> handover · <kbd>?</kbd> hide this · <kbd>Esc</kbd> stand up</div>
+</div>
+<div class="box" id="mtmLabel">Masters, seen from behind you</div>
+<div class="box" id="ovLabel">Overview, from outside (M)</div>
+<div class="box eye" id="eyeL">LEFT camera</div><div class="box eye" id="eyeR">RIGHT camera</div>
+<canvas class="box" id="pads" width="300" height="130"></canvas>
+<div class="box" id="task"></div>
+<div class="box" id="offline">Waiting for the simulator… start it with <b>python launch.py</b></div>
+<div id="sit"><div>
+  <h1>Sit at the console</h1>
+  Click to take the masters. The mouse moves the active hand, the wheel moves it in depth,
+  the left button closes its jaws and Tab switches hand. The keys are listed at the bottom
+  of the screen. Press Esc to stand up.
+</div></div>
+<script src="three.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

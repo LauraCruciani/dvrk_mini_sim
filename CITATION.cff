@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this simulator in teaching, research or derived software, please cite it as below."
+title: "dVRK mini simulator"
+type: software
+authors:
+  - family-names: Cruciani
+    given-names: Laura
+    affiliation: "Politecnico di Milano"
+repository-code: "https://github.com/LauraCruciani/dvrk_mini_sim"
+url: "https://github.com/LauraCruciani/dvrk_mini_sim"
+license: MIT
+date-released: 2026-11-16
+abstract: >-
+  A small, readable simulator of the da Vinci Research Kit (dVRK) in pure
+  Python, with minros, a miniature ROS, and a browser-based endoscope view
+  for teleoperation exercises.
+keywords:
+  - dVRK
+  - surgical robotics
+  - teleoperation
+  - ROS
+  - education
