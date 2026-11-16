@@ -347,13 +347,20 @@ class ConsoleGUI:
             lines.append("N: reach task (yellow targets, either arm)    B: handover task (pick with PSM2, "
                          "pass to PSM1, put down in the ring of the same colour)")
         self.hud.set_text("\n".join(lines))
-        self.hud.set_color("#c0392b" if hot else "black")
+        col = [c for a in n.collision.values() for c in a]
+        if hot or "tissue" in col or "wall" in col:
+            self.hud.set_color("#c0392b")                   # red: vessels, tissue, wall
+        elif st.get("clashing", "PSM1" in col or "PSM2" in col):
+            self.hud.set_color("#c99700")                   # yellow: the instruments collided
+        else:
+            self.hud.set_color("black")
         self.fig.canvas.draw_idle()
 
 
 def main():
     minros.init()
     node = ConsoleNode()
+    node.present = True                                    # the Matplotlib window has no "head in" sensor
     stop = threading.Event()
 
     def spin():

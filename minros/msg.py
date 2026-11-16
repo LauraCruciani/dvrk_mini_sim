@@ -93,6 +93,25 @@ class Point:
 
 
 @message
+class Vector3:
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+
+
+@message
+class Wrench:
+    force: Vector3 = field(default_factory=Vector3)       # newtons
+    torque: Vector3 = field(default_factory=Vector3)      # newton metres
+
+
+@message
+class WrenchStamped:
+    header: Header = field(default_factory=Header)
+    wrench: Wrench = field(default_factory=Wrench)
+
+
+@message
 class Quaternion:
     x: float = 0.0
     y: float = 0.0

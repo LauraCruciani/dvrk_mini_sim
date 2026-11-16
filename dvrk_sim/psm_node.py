@@ -11,16 +11,28 @@ Topics (same names as the real dVRK, CRTK convention), for PSM1:
               /PSM1/operating_state    String        "ENABLED"
               /PSM1/collision          String        JSON list of what the instrument touches:
                                                      "tissue", "wall", "PSM2" (the other instrument)
+              /PSM1/measured_cf        WrenchStamped estimated contact force on the tool, WORLD frame, 100 Hz
   subscribes  /PSM1/servo_cp           PoseStamped   go to this tip pose (world frame)
               /PSM1/servo_jp           JointState    go to these joint positions
               /PSM1/jaw/servo_jp       JointState    go to this jaw angle
               /PSM2/measured_cp, /PSM2/jaw/measured_js   the other instrument, to avoid it
+              /scene/vessels           PolylineArray the vessels, soft obstacles for the force
+              /scene/world             String        "classic" (flat tissue) or "anatomy" (real surface)
 
 Collisions (geometry in kinematics.py): the arm refuses the part of a motion
 that would push its instrument into the tissue, into the abdominal wall or
 into the other instrument. A tip command below the tissue is first projected
 onto it, so the tip slides along the surface instead of stopping. There are
-no forces: this is a kinematic safety layer, like virtual fixtures.
+no forces in the motion: this is a kinematic safety layer, like virtual fixtures.
+
+Contact force (measured_cf), the god-object / proxy method of haptics: the
+real instrument stops on the surface, the point commanded by the hand goes
+on into the obstacle, and a spring between the two pushes back:
+    F = stiffness * (actual tip - commanded tip), along the contact normals,
+only pushing out (never pulling in). The vessels are soft: they do not stop
+the instrument, but they push back with vessel_stiffness * penetration.
+The teleoperation sends this force back to the master (/MTMR/servo_cf).
+Parameters: stiffness (N/m), vessel_stiffness (N/m), max_force (N).
 
 As on the dVRK, "measured_cp" is expressed in a common frame shared by all
 arms, while "local/measured_cp" is relative to the arm's own base. Here the
@@ -32,11 +44,13 @@ import time
 import numpy as np
 
 import minros
-from minros.msg import JointState, PoseStamped, String, Header
+from minros.msg import (JointState, PoseStamped, String, Header, PolylineArray,
+                        WrenchStamped, Wrench, Vector3)
 from .kinematics import (JOINT_NAMES, LOWER, UPPER, JAW_LIMITS, PSM_BASES, PSM_HOME,
                          forward, inverse, pose_to_msg, msg_to_pose,
-                         instrument_capsules, instrument_clearances, capsule_clearance, tissue_height,
-                         JAW_R)
+                         instrument_capsules, instrument_clearances, capsule_clearance, capsule_contact,
+                         tissue_height, wall_normal, JAW_R, CLEVIS_R)
+from . import anatomy
 
 TOUCH = 0.0003          # closer than this to an obstacle counts as touching it (m)
 TIP_ABOVE_TISSUE = JAW_R + 0.0002   # where a tip command below the tissue is projected
@@ -60,6 +74,16 @@ class PSM(minros.Node):
         self.other_pose, self.other_jaw = None, 0.6
         self.touching, self.last_touching = [], None
         self._ckey, self._cval = None, None
+        self.declare_parameter("stiffness", 300.0)          # N/m: tissue, wall, other instrument
+        self.declare_parameter("vessel_stiffness", 120.0)   # N/m: vessels are softer
+        self.declare_parameter("max_force", 6.0)            # N
+        tip0, _, _ = forward(self.q)
+        self.cmd_tip = tip0 + self.base                     # where the hand wants the tip (world)
+        self.vessels = []
+        self.force = np.zeros(3)
+        self.anat = None                                    # the real surface, in the anatomy world
+        self.organ, self.tissue_n = "tissue", np.array([0.0, 0.0, 1.0])
+        self.create_subscription(String, "/scene/world", self.on_world, 1)
 
         self.pub_js = self.create_publisher(JointState, f"/{name}/measured_js", 10)
         self.pub_cp = self.create_publisher(PoseStamped, f"/{name}/measured_cp", 10)
@@ -67,6 +91,8 @@ class PSM(minros.Node):
         self.pub_jaw = self.create_publisher(JointState, f"/{name}/jaw/measured_js", 10)
         self.pub_state = self.create_publisher(String, f"/{name}/operating_state", 10)
         self.pub_collision = self.create_publisher(String, f"/{name}/collision", 10)
+        self.pub_cf = self.create_publisher(WrenchStamped, f"/{name}/measured_cf", 10)
+        self.create_subscription(PolylineArray, "/scene/vessels", self.on_vessels, 1)
         self.create_subscription(PoseStamped, f"/{name}/servo_cp", self.on_servo_cp, 1)
         self.create_subscription(JointState, f"/{name}/servo_jp", self.on_servo_jp, 1)
         self.create_subscription(JointState, f"/{name}/jaw/servo_jp", self.on_jaw, 1)
@@ -84,10 +110,14 @@ class PSM(minros.Node):
     # ------------------------------------------------------------ commands
     def on_servo_cp(self, msg):
         p, R = msg_to_pose(msg)
+        self.cmd_tip = p.copy()                          # before any projection: the god-object needs it
         if self.get_parameter("collisions"):             # slide on the tissue instead of digging into it
-            floor = tissue_height(p[0], p[1]) + TIP_ABOVE_TISSUE
-            if p[2] < floor:
-                p = np.array([p[0], p[1], floor])
+            if self.anat is not None:
+                p = self.anat.project(p, TIP_ABOVE_TISSUE)
+            else:
+                floor = tissue_height(p[0], p[1]) + TIP_ABOVE_TISSUE
+                if p[2] < floor:
+                    p = np.array([p[0], p[1], floor])
         try:
             q, ok = inverse(p - self.base, R)          # world frame -> this arm's RCM frame
         except ValueError as e:
@@ -104,6 +134,7 @@ class PSM(minros.Node):
             self.get_logger().warn("servo_jp needs 6 joint positions", throttle_duration_sec=1)
             return
         self.goal = np.clip(np.array(msg.position, dtype=float), LOWER, UPPER)
+        self.cmd_tip = forward(self.goal)[0] + self.base
 
     def on_jaw(self, msg):
         if msg.position:
@@ -124,14 +155,36 @@ class PSM(minros.Node):
             self.other_caps = instrument_capsules(p, R, self.other_jaw, PSM_BASES[self.other])
 
     # ----------------------------------------------------------- collisions
+    def on_world(self, msg):
+        if msg.data == "anatomy" and self.anat is None and anatomy.available():
+            self.anat = anatomy.Anatomy()
+            self.get_logger().info("anatomy world: colliding with the real surface")
+        elif msg.data != "anatomy" and self.anat is not None:
+            self.anat = None
+            self.organ, self.tissue_n = "tissue", np.array([0.0, 0.0, 1.0])
+            self.get_logger().info("classic world")
+
+    def anatomy_gap(self, caps):
+        """Gap of the clevis and jaws to the real surface; remembers the organ and its normal."""
+        pts = [(caps[1][0], CLEVIS_R), (caps[1][1], CLEVIS_R)] + [(c[1], JAW_R) for c in caps[2:]]
+        gap, n, organ = self.anat.surface(np.array([p for p, _ in pts]), [r for _, r in pts])
+        if not np.isfinite(gap).any():
+            return np.inf, None, None
+        i = int(np.nanargmin(gap))
+        return float(gap[i]), n[i], organ[i]
+
     def clearances(self, x):
         """Gap to each obstacle for the configuration x = 6 joints + jaw (negative = penetration)."""
-        key = (x.tobytes(), id(self.other_caps))
+        key = (x.tobytes(), id(self.other_caps), id(self.anat))
         if key == self._ckey:                               # nothing moved since the last check
             return self._cval
         tip, R, _ = forward(x[:6])
         caps = instrument_capsules(tip + self.base, R, x[6], self.base)
         tissue, wall = instrument_clearances(caps)
+        if self.anat is not None:
+            tissue, n, organ = self.anatomy_gap(caps)
+            if n is not None and tissue < 0.002:
+                self.organ, self.tissue_n = organ, n
         out = {"tissue": tissue, "wall": wall}
         if self.other_caps is not None:
             out[self.other] = capsule_clearance(caps, self.other_caps)
@@ -162,10 +215,46 @@ class PSM(minros.Node):
                     x = trial
         return x, before
 
+    def on_vessels(self, msg):
+        self.vessels = [(np.array([[p.x, p.y, p.z] for p in line.points]), line.radius) for line in msg.lines]
+
+    # ----------------------------------------------------------------- force
+    def contact_force(self):
+        """Estimated force on the tool (world frame, N): proxy springs + soft vessels."""
+        tip, R, _ = forward(self.q)
+        tip = tip + self.base
+        F = np.zeros(3)
+        if self.get_parameter("collisions") and self.touching:
+            caps = instrument_capsules(tip, R, self.jaw, self.base)
+            normals = []
+            if "tissue" in self.touching:
+                normals.append(self.tissue_n)
+            if "wall" in self.touching:
+                normals.append(wall_normal(tip))
+            if self.other in self.touching and self.other_caps is not None:
+                normals.append(capsule_contact(caps, self.other_caps)[1])
+            delta = tip - self.cmd_tip                      # from the commanded point back to the proxy
+            for n in normals:                               # push out only, never pull in
+                F += self.get_parameter("stiffness") * max(0.0, float(n @ delta)) * n
+        for pts, r in self.vessels:                         # soft vessels: spring on the penetration
+            a, b = pts[:-1], pts[1:]
+            ab = b - a
+            t = np.clip(np.einsum("ij,ij->i", tip - a, ab) / np.einsum("ij,ij->i", ab, ab), 0, 1)
+            c = a + ab * t[:, None]
+            d = np.linalg.norm(tip - c, axis=1)
+            i = int(np.argmin(d))
+            depth = r + JAW_R - d[i]
+            if depth > 0:
+                F += self.get_parameter("vessel_stiffness") * depth * (tip - c[i]) / max(d[i], 1e-9)
+        f = np.linalg.norm(F)
+        fmax = self.get_parameter("max_force")
+        return F * (fmax / f) if f > fmax else F
+
     def publish_collision(self, force=False):
-        if force or self.touching != self.last_touching:
-            self.pub_collision.publish(String(data=json.dumps(self.touching)))
-            self.last_touching = list(self.touching)
+        named = [self.organ if t == "tissue" else t for t in self.touching]   # the organ, in the anatomy
+        if force or named != self.last_touching:
+            self.pub_collision.publish(String(data=json.dumps(named)))
+            self.last_touching = named
 
     # ---------------------------------------------------------- simulation
     def step(self):
@@ -195,6 +284,9 @@ class PSM(minros.Node):
         stamp = time.time()
         tip, R, _ = forward(self.q)
         self.pub_cp.publish(pose_to_msg(tip + self.base, R, "world", stamp))
+        self.force = self.contact_force()
+        self.pub_cf.publish(WrenchStamped(header=Header(stamp, "world"),
+                                          wrench=Wrench(force=Vector3(*map(float, self.force)))))
         if self.tick % 4:
             return                                          # the rest at 50 Hz
         self.pub_js.publish(JointState(header=Header(stamp, f"{self.arm}_base"), name=JOINT_NAMES,

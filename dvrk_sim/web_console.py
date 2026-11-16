@@ -101,6 +101,8 @@ class Console:
         elif t == "nudge":
             dt = min(0.1, max(0.0, float(m.get("dt", 0.0))))
             n.nudge(float(m["right"]), float(m["forward"]), float(m["up"]), dt)
+        elif t == "present":                               # head in / out of the viewer (pointer lock)
+            n.set_present(bool(m.get("on")))
         elif t == "grip":
             n.set_grip(bool(m["down"]))
         elif t == "key":
@@ -127,7 +129,10 @@ class Console:
         finally:
             with self.clients_lock:
                 self.clients.discard(ws)
+                nobody = not self.clients
             self.node.set_grip(False)
+            if nobody:
+                self.node.set_present(False)                   # the page was closed: nobody at the console
 
     def broadcast_forever(self):
         while True:

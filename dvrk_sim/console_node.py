@@ -7,6 +7,12 @@ scene so that a window (web or Matplotlib) can draw it.
 
 One hand is active at a time; the user interfaces call move_hand(),
 move_depth(), set_grip() and handle_key().
+
+Force feedback (pseudo-haptic): a mouse cannot push your hand, so the console
+renders /MTMR/servo_cf on the virtual hand instead, as an admittance: the hand
+is pushed along the force, hand velocity = force / damping. Pushing an
+instrument into the tissue therefore feels "hard": the hand keeps sliding
+back out until the instrument is just on the surface. Key R turns it on/off.
 """
 import collections
 import json
@@ -17,10 +23,12 @@ import time
 import numpy as np
 
 import minros
-from minros.msg import PoseStamped, JointState, Bool, String, PoseArray, PolylineArray, Header
+from minros.msg import PoseStamped, JointState, Bool, String, PoseArray, PolylineArray, Header, WrenchStamped
 from .kinematics import (pose_to_msg, msg_to_pose, JAW_LENGTH, PSM_BASES, MTM_JOINT_NAMES,
                          mtm_inverse, mtm_forward_points, mtm_hand_rotation,
                          ECM_HOME, ECM_LOWER, ECM_UPPER, ECM_BASE, view_rotation)
+from .kinematics import inverse, LOWER, UPPER, JOINT_NAMES
+from .lnd import link_poses
 
 SIDES = ("MTML", "MTMR")
 ARM = {"MTML": "PSM2", "MTMR": "PSM1"}
@@ -28,6 +36,11 @@ TELEOP = {"MTML": "MTML_PSM2", "MTMR": "MTMR_PSM1"}
 CONSOLE_X = {"MTML": -0.18, "MTMR": 0.18}           # where each master stands in the console
 HAND_X, HAND_Y, HAND_Z = 0.15, 0.10, 0.12            # half sizes of each hand workspace (m)
 TREMOR_AMP = 0.003
+HAPTIC_TAU = 0.12            # s: how fast the hand is pushed back out of a stiff (300 N/m) obstacle
+HAPTIC_K = 300.0             # N/m, the stiffness HAPTIC_TAU refers to
+HAPTIC_VMAX = 0.5            # m/s: never push the hand faster than this
+ALIGN_SPEED = 1.2            # rad/s: how fast the master turns to match the instrument
+WRIST_LIMIT = 1.5            # rad: range of the hand angles (yaw, pitch, roll)
 KEY_SPEED = 0.02                                     # m/s of the instrument with the keyboard
 
 
@@ -49,10 +62,15 @@ class ConsoleNode(minros.Node):
         self.R = {a: None for a in ARM.values()}
         self.jaw = {a: 0.6 for a in ARM.values()}
         self.collision = {a: [] for a in ARM.values()}
+        self.cf = {s: np.zeros(3) for s in SIDES}          # force to render on each master (hand frame)
+        self.last_haptic = time.monotonic()
         self.trail = {a: collections.deque(maxlen=300) for a in ARM.values()}
         self.ecm_pose = None
         self.ecm_goal = None
         self.ecm_cmd_time = 0.0
+        self.ecm_q = None
+        self.world = "classic"
+        self.create_subscription(String, "/scene/world", lambda m: setattr(self, "world", m.data), 1)
         self.targets, self.vessels = [], []
         self.status, self.teleop = {}, {}
         self.contact_until = 0.0
@@ -64,12 +82,19 @@ class ConsoleNode(minros.Node):
                            self.create_publisher(JointState, f"/{s}/measured_js", 10),
                            self.create_publisher(JointState, f"/{s}/gripper/measured_js", 10))
             self.create_subscription(String, f"/{TELEOP[s]}/state", self._teleop_cb(s), 1)
+            self.create_subscription(WrenchStamped, f"/{s}/servo_cf", self._cf_cb(s), 1)
         for a in ARM.values():
             self.create_subscription(PoseStamped, f"/{a}/measured_cp", self._tip_cb(a), 1)
             self.create_subscription(JointState, f"/{a}/jaw/measured_js", self._jaw_cb(a), 1)
             self.create_subscription(String, f"/{a}/collision",
                                      lambda m, a=a: self.collision.__setitem__(a, json.loads(m.data or "[]")), 10)
         self.pub_clutch = self.create_publisher(Bool, "/footpedals/clutch", 10)
+        self.present = False                               # head in the viewer
+        self.pub_present = self.create_publisher(Bool, "/console/operator_present", 10)
+        self.create_timer(0.1, lambda: self.pub_present.publish(Bool(data=self.present)))
+        self.align_goal = {s: None for s in SIDES}         # (angles, time) asked by the teleoperation
+        for s in SIDES:
+            self.create_subscription(PoseStamped, f"/{s}/move_cp", self._move_cb(s), 1)
         self.pub_start = self.create_publisher(String, "/scene/start", 10)
         self.pub_ecm = self.create_publisher(JointState, "/ECM/servo_jp", 10)
         self.create_subscription(PoseStamped, "/ECM/measured_cp", self.on_ecm, 1)
@@ -89,8 +114,32 @@ class ConsoleNode(minros.Node):
     def gripper(self, s):
         return 0.0 if (self.pressed[s] or self.latched[s]) else 0.8
 
+    def _cf_cb(self, side):
+        def cb(msg):
+            f = msg.wrench.force
+            self.cf[side] = np.array([f.x, f.y, f.z])
+        return cb
+
+    def render_forces(self, dt):
+        """Pseudo-haptics: move each virtual hand along the force it should feel (admittance)."""
+        for s in SIDES:
+            F = self.cf[s]
+            if not F.any():
+                continue
+            scale = float(self.teleop.get(s, {}).get("scale", 3.0))
+            v = F * scale / (HAPTIC_TAU * HAPTIC_K)        # the instrument comes out in HAPTIC_TAU at any scale
+            sp = np.linalg.norm(v)
+            if sp > HAPTIC_VMAX:
+                v *= HAPTIC_VMAX / sp
+            with self.lock:
+                h = self.hand[s] + v * dt
+                self.hand[s] = np.clip(h, [-HAND_X, -HAND_Y, -HAND_Z], [HAND_X, HAND_Y, HAND_Z])
+
     def publish_masters(self):
         t = time.monotonic()
+        self.render_forces(min(0.05, t - self.last_haptic))
+        self.align_masters(min(0.05, t - self.last_haptic))
+        self.last_haptic = t
         self.n_pub += 1
         for k, s in enumerate(SIDES):
             with self.lock:
@@ -173,6 +222,31 @@ class ConsoleNode(minros.Node):
         if side in SIDES:
             self.set_active(side)
 
+    def set_present(self, on):
+        if bool(on) != self.present:
+            self.present = bool(on)
+            self.pub_present.publish(Bool(data=self.present))
+
+    def _move_cb(self, side):
+        def cb(msg):
+            _, H = msg_to_pose(msg)                        # H = rz(yaw) rx(pitch) ry(roll)
+            goal = [math.atan2(-H[0, 1], H[1, 1]), math.asin(max(-1.0, min(1.0, H[2, 1]))),
+                    math.atan2(-H[2, 0], H[2, 2])]
+            self.align_goal[side] = (np.clip(goal, -WRIST_LIMIT, WRIST_LIMIT), time.monotonic())
+        return cb
+
+    def align_masters(self, dt):
+        """The motors of the masters turn the handles to match the instruments (ALIGNING)."""
+        now = time.monotonic()
+        for s in SIDES:
+            g = self.align_goal[s]
+            if g is None or now - g[1] > 0.15:
+                continue
+            with self.lock:
+                a = np.array(self.angles[s])
+                d = np.clip(g[0] - a, -ALIGN_SPEED * dt, ALIGN_SPEED * dt)
+                self.angles[s] = [float(v) for v in a + d]
+
     def set_clutch(self, on):
         self.clutch = on
         self.pub_clutch.publish(Bool(data=on))
@@ -181,7 +255,10 @@ class ConsoleNode(minros.Node):
         if self.ecm_goal is None:
             return
         self.ecm_cmd_time = time.monotonic()
-        self.ecm_goal = np.clip(self.ecm_goal + [dyaw, dpitch, dins, 0.0], ECM_LOWER, ECM_UPPER)
+        goal = self.ecm_goal + [dyaw, dpitch, dins, 0.0]
+        if self.ecm_q is not None:                         # do not run far ahead of a camera that is blocked
+            goal = np.clip(goal, self.ecm_q - 0.06, self.ecm_q + 0.06)
+        self.ecm_goal = np.clip(goal, ECM_LOWER, ECM_UPPER)
         self.pub_ecm.publish(JointState(header=Header.now(), name=["yaw", "pitch", "insertion", "roll"],
                                         position=[float(v) for v in self.ecm_goal]))
 
@@ -195,6 +272,9 @@ class ConsoleNode(minros.Node):
         elif k in ("1", "2", "3", "5"):
             for t in TELEOP.values():
                 self.set_remote_parameter(t, "scale", float(k))
+        elif k == "r":
+            for t in TELEOP.values():
+                self.set_remote_parameter(t, "force_feedback", not tp.get("force_feedback", True))
         elif k == "t":
             self.tremor = not self.tremor
         elif k == "f":
@@ -206,6 +286,8 @@ class ConsoleNode(minros.Node):
                 self.set_remote_parameter(t, "latency_ms", float(np.clip(v, 0, 1000)))
         elif k == "n":
             self.pub_start.publish(String(data="reach"))
+        elif k == "y":
+            self.pub_start.publish(String(data="anatomy"))
         elif k == "b":
             self.pub_start.publish(String(data="handover"))
         elif k == "w":
@@ -221,7 +303,7 @@ class ConsoleNode(minros.Node):
             idx, sign = {"j": (0, 1), "l": (0, -1), "i": (1, 1), "k": (1, -1), "u": (2, 1), "o": (2, -1)}[k]
             with self.lock:
                 a = self.angles[self.active]
-                a[idx] = float(np.clip(a[idx] + sign * 0.1, -1.2, 1.2))
+                a[idx] = float(np.clip(a[idx] + sign * 0.1, -WRIST_LIMIT, WRIST_LIMIT))
         elif k == "v":
             self.camera_mode = not self.camera_mode
         elif k == "arrowleft":
@@ -265,6 +347,8 @@ class ConsoleNode(minros.Node):
         self.ecm_pose = msg_to_pose(msg)
 
     def on_ecm_js(self, msg):
+        if len(msg.position) == 4:
+            self.ecm_q = np.array(msg.position, dtype=float)
         # follow the measured camera unless we commanded it a moment ago: another
         # node (an autonomous camera, for example) may be moving it
         if len(msg.position) == 4 and time.monotonic() - self.ecm_cmd_time > 0.5:
@@ -295,13 +379,28 @@ class ConsoleNode(minros.Node):
                 arms[a] = {"rcm": r(base), "tip": r(self.tip[a]), "wrist": r(self.tip[a] - R[:, 2] * JAW_LENGTH),
                            "R": [r(row) for row in R], "jaw": round(float(self.jaw[a]), 4),
                            "collision": list(self.collision[a])}
+                try:                                       # how close the arm is to a joint limit
+                    qa, _ = inverse(self.tip[a] - base, R)
+                    m = np.minimum(qa - LOWER, UPPER - qa) / (UPPER - LOWER)
+                    i = int(np.argmin(m))
+                    arms[a]["rom"] = [round(float(m[i]), 3), JOINT_NAMES[i]]
+                except ValueError:
+                    pass
+                if self.world == "anatomy":                # the CAD links of the Large Needle Driver
+                    try:
+                        qa, _ = inverse(self.tip[a] - base, R)
+                        L = link_poses(qa, float(self.jaw[a]), base)
+                        arms[a]["links"] = {k: r(v) if k == "shaft_end" else [r(v[0]), [r(row) for row in v[1]]]
+                                            for k, v in L.items()}
+                    except ValueError:
+                        pass
             mtm = {}
             for s in SIDES:
                 off = np.array([CONSOLE_X[s], 0.0, 0.0])
                 S, E, H = (p + off for p in mtm_forward_points(self.mtm_q[s]))
                 mtm[s] = {"S": r(S), "E": r(E), "H": r(H), "R": [r(row) for row in mtm_hand_rotation(self.angles[s])],
                           "grip": self.gripper(s), "hand": r(self.hand[s]), "q": r(self.mtm_q[s]),
-                          "latched": self.latched[s]}
+                          "latched": self.latched[s], "force": r(self.cf[s])}
             targets = [r(t) for t in self.targets]
         ecm = None
         if self.ecm_pose is not None:
@@ -311,7 +410,8 @@ class ConsoleNode(minros.Node):
                 "clutch": self.clutch, "tremor": self.tremor, "camera_mode": self.camera_mode,
                 "teleop": self.teleop, "status": self.status, "targets": targets,
                 "contact": time.monotonic() < self.contact_until,
-                "workspace": [HAND_X, HAND_Y, HAND_Z]}
+                "workspace": [HAND_X, HAND_Y, HAND_Z], "world": self.world,
+                "present": self.present}
 
     def vessels_message(self):
         with self.lock:

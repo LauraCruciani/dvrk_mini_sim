@@ -1,12 +1,18 @@
 """The surgical scene, shared by both arms (all coordinates in the world frame).
 
-Two tasks:
+Three tasks:
   reach     touch the yellow targets in order with either instrument
   handover  pick up each bead with the LEFT arm (PSM2), pass it to the RIGHT
             arm (PSM1) and put it down on its ring. A classic bimanual
             training exercise.
-Both tasks count contacts with the blood vessels and clashes between the
-two instruments.
+  anatomy   a realistic scene: the instruments work inside a laparoscopic
+            surface reconstructed from a real video frame (dvrk_sim/anatomy.py).
+            Free exploration; contacts are counted per organ.
+
+The first two tasks use the "classic" world (flat tissue, vessels, dome), the
+third the "anatomy" world: /scene/world tells every node which one is active.
+Both tasks count contacts with the blood vessels, touches of the tissue or
+of the abdominal wall, and clashes between the two instruments.
 
 Each bead has its own ring, drawn in the same colour: a bead counts as placed
 only in its own ring. Once placed, bead and ring turn green.
@@ -19,6 +25,7 @@ only in its own ring. Once placed, bead and ring turn green.
               /scene/vessels    PolylineArray  vessel centre lines and radii, 1 Hz
               /scene/status     String         JSON with everything else, 20 Hz
               /scene/contact    Bool           true while a tip touches a vessel
+              /scene/world      String         "classic" or "anatomy", 2 Hz
 
 Grasping: closing the jaws (below 0.35 rad) within 6 mm of a bead picks it
 up. Opening them releases it; a released bead falls on the tissue (z = -130 mm); the vessels lie on it.
@@ -34,7 +41,10 @@ import numpy as np
 import minros
 from minros.msg import (PoseStamped, PoseArray, Pose, Point, Bool, String, Header,
                         Polyline, PolylineArray, JointState)
-from .kinematics import msg_to_pose
+from .kinematics import msg_to_pose, pose_to_msg, ECM_HOME, ECM_JOINT_NAMES, PSM_BASES, shaft_rotation
+from . import anatomy
+
+PARK_S = 1.5              # s to bring the instruments to their start poses in the anatomy
 
 ARMS = ("PSM1", "PSM2")
 FLOOR = -0.130            # tissue surface
@@ -87,8 +97,9 @@ class Scene(minros.Node):
         self.path = 0.0
         self.contacts, self.drops, self.handovers = 0, 0, 0
         self.clashes = 0
+        self.tissue_hits = 0
         self.collision = {a: [] for a in ARMS}
-        self.in_clash = False
+        self.in_clash = self.in_tissue = False
         self.in_contact = False
         self.prev_tip = {a: None for a in ARMS}
         self.last = time.monotonic()
@@ -105,17 +116,39 @@ class Scene(minros.Node):
         self.create_timer(1 / 100, self.step)
         self.create_timer(0.2, self.publish_targets)
         self.create_timer(1.0, self.publish_vessels)
+        self.world = "classic"
+        self.organ_contacts, self.touching_organs = {}, set()
+        self.arm_on_tissue = {}
+        self.rot = {a: None for a in ARMS}
+        self.park_until = 0.0
+        self.pub_world = self.create_publisher(String, "/scene/world", 10)
+        self.pub_servo = {a: self.create_publisher(PoseStamped, f"/{a}/servo_cp", 10) for a in ARMS}
+        self.pub_ecm = self.create_publisher(JointState, "/ECM/servo_jp", 10)
+        self.create_timer(0.5, lambda: self.pub_world.publish(String(data=self.world)))
         self.create_timer(0.05, self.publish_status)
         self.get_logger().info('scene ready: publish "reach" or "handover" on /scene/start')
 
     def _tip_cb(self, arm):
         def cb(msg):
-            self.tip[arm], _ = msg_to_pose(msg)
+            self.tip[arm], self.rot[arm] = msg_to_pose(msg)
         return cb
 
     def _collision_cb(self, arm):
         def cb(msg):
             self.collision[arm] = json.loads(msg.data or "[]")
+            mine = [c for c in self.collision[arm] if c not in ARMS and c != "wall"]
+            if mine and not self.arm_on_tissue.get(arm) and self.state == "running":
+                o = mine[0]                                         # a new contact of this instrument
+                self.organ_contacts[o] = self.organ_contacts.get(o, 0) + 1
+            self.arm_on_tissue[arm] = bool(mine)
+            organs = {c for a in ARMS for c in self.collision[a] if c not in ARMS}
+            self.touching_organs = organs
+            tissue = bool(organs)
+            if tissue and not self.in_tissue:
+                if self.state == "running":
+                    self.tissue_hits += 1
+                self.get_logger().warn("contact with the tissue!")
+            self.in_tissue = tissue
             clash = any(b in self.collision[a] for a in ARMS for b in ARMS if b != a)
             if clash and not self.in_clash and self.passing_bead():
                 return                      # jaws meeting around a bead: that is a handover, not a clash
@@ -174,17 +207,56 @@ class Scene(minros.Node):
 
     def on_start(self, msg):
         task = (msg.data or "reach").strip().lower()
-        if task not in ("reach", "handover"):
-            self.get_logger().warn(f"unknown task '{task}': use reach or handover")
+        if task not in ("reach", "handover", "anatomy"):
+            self.get_logger().warn(f"unknown task '{task}': use reach, handover or anatomy")
             return
+        if task == "anatomy" and not anatomy.available():
+            self.get_logger().warn("the anatomy is not available: put surgaware_ply_export/ in the simulator "
+                                   "folder and run python -m dvrk_sim.anatomy")
+            return
+        world = "anatomy" if task == "anatomy" else "classic"
+        if world != self.world:
+            self.world = world
+            self.pub_world.publish(String(data=world))
+            self.publish_vessels()
+        if world == "anatomy":
+            self.park()
+        self.organ_contacts, self.touching_organs = {}, set()
         self.task, self.state = task, "running"
         self.targets = self.make_targets() if task == "reach" else []
         self.beads = self.make_beads() if task == "handover" else []
         self.index, self.hold, self.path = 0, 0.0, 0.0
         self.contacts, self.drops, self.handovers = 0, 0, 0
-        self.clashes = 0
+        self.clashes = self.tissue_hits = 0
         self.t0, self.elapsed = time.monotonic(), 0.0
         self.get_logger().info(f"{task} trial started")
+
+    def park(self):
+        """Bring the camera home and both instruments in front of the anatomy (teleoperation paused)."""
+        if not hasattr(self, "anat"):
+            self.anat = anatomy.Anatomy()
+        self.park_goal = {"PSM2": self.anat.start_tip(-1), "PSM1": self.anat.start_tip(+1)}
+        for t in ("MTMR_PSM1", "MTML_PSM2"):
+            self.set_remote_parameter(t, "enabled", False)
+        self.pub_ecm.publish(JointState(header=Header.now(), name=ECM_JOINT_NAMES,
+                                        position=[float(v) for v in ECM_HOME]))
+        self.park_until = time.monotonic() + PARK_S
+
+    def parking(self, now):
+        if now < self.park_until:
+            for a in ARMS:
+                u = self.park_goal[a] - PSM_BASES[a]              # straight wrist, jaws along the shaft
+                u /= np.linalg.norm(u)
+                R = shaft_rotation(np.arctan2(-u[0], -u[2]), np.arcsin(u[1]))
+                self.pub_servo[a].publish(pose_to_msg(self.park_goal[a], R, "world"))
+            return True
+        if self.park_until:
+            self.park_until = 0.0
+            for t in ("MTMR_PSM1", "MTML_PSM2"):
+                self.set_remote_parameter(t, "enabled", True)    # re-anchors on where the arm is now
+            self.t0, self.path = now, 0.0                         # the trial starts now
+            self.organ_contacts, self.clashes, self.tissue_hits = {}, 0, 0
+        return False
 
     # ------------------------------------------------------------ grasping
     def on_jaw(self, arm, value):
@@ -231,7 +303,10 @@ class Scene(minros.Node):
         tips = [p for p in self.tip.values() if p is not None]
         if not tips:
             return
-        contact = min(vessel_distance(p) for p in tips) < 0.0005
+        if self.parking(now):
+            self.prev_tip = dict(self.tip)
+            return
+        contact = self.world == "classic" and min(vessel_distance(p) for p in tips) < 0.0005
         if contact and not self.in_contact:
             if self.state == "running":
                 self.contacts += 1
@@ -269,7 +344,7 @@ class Scene(minros.Node):
     def finish(self):
         self.state = "done"
         self.get_logger().info(f"{self.task} done in {self.elapsed:.1f} s, path {self.path * 1000:.0f} mm, "
-                               f"{self.contacts} contact(s), {self.clashes} clash(es), {self.drops} drop(s), "
+                               f"{self.contacts} contact(s), {self.tissue_hits} tissue touch(es), {self.clashes} clash(es), {self.drops} drop(s), "
                                f"{self.handovers} handover(s)")
 
     # ------------------------------------------------------------- outputs
@@ -279,8 +354,9 @@ class Scene(minros.Node):
                                            poses=[Pose(position=Point(*map(float, p))) for p in remaining]))
 
     def publish_vessels(self):
-        self.pub_vessels.publish(PolylineArray(header=Header.now("world"), lines=[
-            Polyline(points=[Point(*map(float, p)) for p in pts], radius=r) for pts, r in VESSELS]))
+        lines = [] if self.world != "classic" else [
+            Polyline(points=[Point(*map(float, p)) for p in pts], radius=r) for pts, r in VESSELS]
+        self.pub_vessels.publish(PolylineArray(header=Header.now("world"), lines=lines))
 
     def publish_status(self):
         r3 = lambda v: [round(float(x), 5) for x in v]
@@ -289,7 +365,10 @@ class Scene(minros.Node):
             "index": self.index, "n": len(self.targets),
             "time_s": round(self.elapsed, 2), "path_mm": round(self.path * 1000, 1),
             "contacts": self.contacts, "drops": self.drops, "handovers": self.handovers,
-            "clashes": self.clashes, "collision": self.collision,
+            "clashes": self.clashes, "tissue_hits": self.tissue_hits, "collision": self.collision,
+            "touching_tissue": self.in_tissue, "clashing": self.in_clash,
+            "world": self.world, "organ_contacts": self.organ_contacts,
+            "touching": sorted(self.touching_organs), "parking": self.park_until > 0,
             "hold": round(self.hold / self.get_parameter("hold_s"), 2),
             "beads": [{"p": r3(b["p"]), "goal": r3(b["goal"]), "held": b["holders"], "placed": b["placed"],
                        "color": b["color"]}

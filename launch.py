@@ -29,6 +29,21 @@ ROBOTS = [["dvrk_sim.psm_node", "PSM1"], ["dvrk_sim.psm_node", "PSM2"],
           ["dvrk_sim.scene_node"]]
 
 
+def prepare_assets():
+    """The realistic scene (task Y) needs two sets of assets, built once."""
+    from dvrk_sim import anatomy, lnd
+    try:
+        if not anatomy.ensure(log=print):
+            print("[launch] anatomy task not available: surgaware_ply_export/ not found")
+    except Exception as e:                                   # never stop the simulator for this
+        print(f"[launch] could not build the anatomy: {e}")
+    if not lnd.available():
+        try:
+            lnd.build()
+        except Exception as e:
+            print(f"[launch] could not download the dVRK instrument CAD ({e}): the anatomy uses the simple instruments")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--classic", action="store_true", help="Matplotlib console instead of the web one")
@@ -37,6 +52,7 @@ def main():
     ap.add_argument("--no-browser", action="store_true", help="do not open the browser automatically")
     ap.add_argument("--guard", action="store_true", help="remap MTMR_PSM1's output to /PSM1/servo_cp_raw")
     args = ap.parse_args()
+    prepare_assets()
     # stop the child processes cleanly also when this process is terminated
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
 

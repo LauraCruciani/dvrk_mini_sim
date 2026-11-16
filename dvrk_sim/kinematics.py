@@ -259,6 +259,11 @@ def instrument_capsules(tip, R, jaw, rcm):
 
 def segment_distances(A1, B1, A2, B2):
     """Distances between every segment A1[i]-B1[i] and every segment A2[j]-B2[j] (closest points)."""
+    return np.linalg.norm(_segment_gaps(A1, B1, A2, B2), axis=-1)
+
+
+def _segment_gaps(A1, B1, A2, B2):
+    """Vectors from the closest point of each segment of the second set to that of the first."""
     p1, q1 = np.asarray(A1)[:, None, :], np.asarray(B1)[:, None, :]
     p2, q2 = np.asarray(A2)[None, :, :], np.asarray(B2)[None, :, :]
     d1, d2, r = q1 - p1, q2 - p2, p1 - p2
@@ -270,8 +275,7 @@ def segment_distances(A1, B1, A2, B2):
     t = (b * s + f) / e
     s = np.where(t < 0, np.clip(-c / a, 0.0, 1.0), np.where(t > 1, np.clip((b - c) / a, 0.0, 1.0), s))
     t = np.clip(t, 0.0, 1.0)
-    diff = (p1 + d1 * s[..., None]) - (p2 + d2 * t[..., None])
-    return np.linalg.norm(diff, axis=-1)
+    return (p1 + d1 * s[..., None]) - (p2 + d2 * t[..., None])
 
 
 def capsule_clearance(caps1, caps2):
@@ -279,6 +283,24 @@ def capsule_clearance(caps1, caps2):
     A1, B1, r1 = (np.array([c[i] for c in caps1]) for i in range(3))
     A2, B2, r2 = (np.array([c[i] for c in caps2]) for i in range(3))
     return float(np.min(segment_distances(A1, B1, A2, B2) - r1[:, None] - r2[None, :]))
+
+
+def capsule_contact(caps1, caps2):
+    """Smallest gap between two sets of capsules and the unit normal pushing the first away from the second."""
+    A1, B1, r1 = (np.array([c[i] for c in caps1]) for i in range(3))
+    A2, B2, r2 = (np.array([c[i] for c in caps2]) for i in range(3))
+    v = _segment_gaps(A1, B1, A2, B2)
+    gaps = np.linalg.norm(v, axis=-1) - r1[:, None] - r2[None, :]
+    i, j = np.unravel_index(np.argmin(gaps), gaps.shape)
+    n = v[i, j] / max(np.linalg.norm(v[i, j]), 1e-9)
+    return float(gaps[i, j]), n
+
+
+def wall_normal(p):
+    """Unit normal of the abdominal wall near p, pointing into the cavity."""
+    c = np.array([0.0, 0.0, TISSUE_Z])
+    g = (np.asarray(p, dtype=float) - c) / WALL_AXES ** 2
+    return -g / max(np.linalg.norm(g), 1e-9)
 
 
 def instrument_clearances(caps):

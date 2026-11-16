@@ -11,13 +11,16 @@ the right moves the instrument to the right on screen, wherever the camera
 points. That is what makes a real console feel natural.
 
 The endoscope cannot be pulled back into the abdominal wall: a motion that
-would push the camera tip into it is refused (see kinematics.py).
+would push the camera tip into it is refused (see kinematics.py). In the
+anatomy world (/scene/world) a motion is also refused when the view would
+reach past the reconstructed surface (anatomy.Anatomy.view_ok).
 """
 import time
 import numpy as np
 
 import minros
 from minros.msg import JointState, PoseStamped, String, Header
+from . import anatomy
 from .kinematics import (ECM_JOINT_NAMES, ECM_HOME, ECM_LOWER, ECM_UPPER, ecm_forward, pose_to_msg,
                          wall_height, ENDOSCOPE_R)
 
@@ -37,6 +40,8 @@ class ECM(minros.Node):
         self.pub_js = self.create_publisher(JointState, "/ECM/measured_js", 10)
         self.pub_state = self.create_publisher(String, "/ECM/operating_state", 10)
         self.create_subscription(JointState, "/ECM/servo_jp", self.on_servo_jp, 1)
+        self.anat = None
+        self.create_subscription(String, "/scene/world", self.on_world, 1)
         self.last = time.monotonic()
         self.create_timer(1 / 50, self.step)
         self.create_timer(0.5, lambda: self.pub_state.publish(String(data="ENABLED")))
@@ -48,14 +53,27 @@ class ECM(minros.Node):
             return
         self.goal = np.clip(np.array(msg.position, dtype=float), ECM_LOWER, ECM_UPPER)
 
+    def on_world(self, msg):
+        if msg.data == "anatomy" and self.anat is None and anatomy.available():
+            self.anat = anatomy.Anatomy()
+        elif msg.data != "anatomy":
+            self.anat = None
+
+    def view_ok(self, q):
+        return self.anat is None or self.anat.view_ok(*ecm_forward(q))
+
     def step(self):
         now = time.monotonic()
         dt = min(0.1, now - self.last)
         self.last = now
         dq = np.clip(self.goal - self.q, -self.vmax * dt, self.vmax * dt)
         before = wall_gap(self.q)
-        ok = lambda q: (g := wall_gap(q)) >= 0 or g >= before - 1e-9
-        if ok(self.q + dq):
+        seen = self.view_ok(self.q) if dq.any() else True
+        # a pose that shows the borders is only accepted while already showing them (to come back)
+        ok = lambda q: ((g := wall_gap(q)) >= 0 or g >= before - 1e-9) and (not seen or self.view_ok(q))
+        if not dq.any():
+            pass
+        elif ok(self.q + dq):
             self.q = self.q + dq
         else:                                               # keep only the joints that stay clear
             for i in range(4):

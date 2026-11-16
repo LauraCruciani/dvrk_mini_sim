@@ -91,9 +91,12 @@ changes, but "right" on screen is still "right" for your hand.*
 | `1` `2` `3` `5` | motion scale for both arms |
 | `T` | simulated physiological tremor, about 10 Hz, on both hands |
 | `F` | tremor filter in both teleoperation nodes |
+| `R` | force feedback on/off (pseudo-haptic resistance on the hand) |
 | `+` / `-` | artificial communication delay, 50 ms steps |
 | `N` | reach task: touch the yellow targets in order with either instrument |
 | `B` | handover task: see below |
+| `Y` | realistic anatomy: see below |
+| `Z` | surgeon viewer: only what a surgeon sees in the console |
 | `?` | show or hide the list of keys |
 
 The web console works like **rosbridge** does in ROS: a small server inside
@@ -101,6 +104,35 @@ the `console` node (`dvrk_sim/web_console.py`, standard library only) sends
 the robots' state to the page through a WebSocket 50 times a second, and the
 page sends mouse and keyboard events back. 
 
+
+### Taking control, as on the clinical robot
+
+The instruments do not follow your hand as soon as you sit down. As on the da
+Vinci (and in the dVRK teleoperation):
+
+1. **head in**: clicking the view puts your head in the viewer
+   (`/console/operator_present`); Esc takes it out and locks the instruments;
+2. **alignment**: each master turns until its handle has the orientation of
+   its instrument as seen in the camera (the teleoperation asks for it on
+   `/MTMR/move_cp`; watch the masters turn in the inset);
+3. **squeeze**: press the left button (the grip) to take control of that
+   arm. Only then does it follow (FOLLOWING); the other hand needs its own
+   squeeze after Tab.
+
+Leaving the console, or a script that pauses the teleoperation, gives the
+control up: next time align and squeeze again. The clutch does not.
+`python -m minros param set MTMR_PSM1 require_operator false` restores the
+old behaviour.
+
+### Surgeon viewer (Z)
+
+**Z** hides everything that is not in a real surgeon console (key list,
+panels, insets) and shows a viewer interface inspired by the clinical one:
+the instrument of each arm with its number and state at the bottom corners
+(in control, squeeze to take control, contact, range of motion), the
+messages of the system at the top, the pedals and the motion scale at the
+bottom, and an arrow on the edge of the image towards an instrument that is
+out of view. Z again goes back to the normal view.
 
 ### The handover task
 
@@ -139,12 +171,73 @@ slides along the surface. There are no forces: think of it as a safety layer
 or a virtual fixture, not as contact physics.
 
 What an instrument touches is published on `/PSM1/collision` and shown in the
-view: an amber tag when it rests on the tissue, a red tag and a red glow when
-it hits the other instrument or the wall. The scene counts the clashes
-between the instruments as an error, except when the two jaws meet around a
-bead during a handover. Vessels are still soft: you can touch them, and each
-contact is counted. `python -m minros param set PSM1 collisions false` turns
+view the same way as a vessel contact: the border of the screen and the
+instrument turn **red** when it touches tissue (a vessel, the tissue, the
+abdominal wall) and **yellow** when the two instruments collide. The scene
+counts vessel contacts, tissue touches and clashes separately, and ignores the
+two jaws meeting around a bead during a handover. Vessels are still soft: you
+can press into them, and each contact is counted. `python -m minros param set PSM1 collisions false` turns
 the checks off for one arm.
+
+### Force feedback
+
+Each PSM estimates the contact force on its tool with the classic
+**god-object (proxy)** method of haptics: the instrument stops on the
+surface, the point your hand commands goes on into the obstacle, and a spring
+between the two pushes back, `F = stiffness × (actual tip − commanded tip)`
+along the contact normal (outwards only). Tissue, abdominal wall and the other
+instrument are stiff (300 N/m); the vessels are soft (120 N/m) and do not
+stop the instrument.
+
+The chain is the one of a real dVRK with motorised masters:
+
+```
+PSM1 --/PSM1/measured_cf--> MTMR_PSM1 --/MTMR/servo_cf--> console (MTMR)
+        world frame           camera -> hand frame,         renders it on
+                              force_scale, delay            the hand
+```
+
+A mouse cannot push your hand, so the console renders the force as
+**pseudo-haptic resistance**: the virtual hand is pushed along the force
+(an admittance). Pushing an instrument into the tissue feels "hard": the hand
+keeps sliding back until the instrument is just on the surface; a vessel
+gives way slowly. **R** turns the feedback on and off; the HUD shows the force.
+With a real haptic device you would read `/MTMR/servo_cf` instead.
+
+Try it with the delay (**+**): the force comes back late too, and with a few
+hundred milliseconds the hand gets kicked back out of the tissue. That is
+why force feedback and long-distance telesurgery do not mix easily.
+
+Parameters: `python -m minros param set PSM1 stiffness 500`
+(also `vessel_stiffness`, `max_force`) and
+`python -m minros param set MTMR_PSM1 force_scale 0.5` (or `force_feedback false`).
+
+### Realistic anatomy (task Y)
+
+**Y** moves the robots into a real laparoscopic scene: the gallbladder, liver
+and fat of a cholecystectomy, reconstructed in 3D from a real video frame,
+with the photo as texture. The instruments become the dVRK **Large Needle
+Driver**, drawn from its official CAD.
+
+* The surface is the tissue: collisions, force feedback and the red border
+  work on it, and the HUD tells which organ you touch and counts the contacts
+  per organ (a new contact each time an instrument touches tissue).
+* When the task starts, the camera goes home and the two instruments are
+  brought just in front of the gallbladder (left) and the liver (right).
+* The reconstruction is seen from one viewpoint only, so the camera arm
+  refuses poses from which you would see its borders: you can turn it by a
+  few degrees, roll it and move it in and out. The field of view is the one
+  of the original laparoscope.
+* N or B go back to the classic scene.
+
+It needs the SurgAware exports in `surgaware_ply_export/` (not part of this
+repository: Cholec80-derived textures, CC BY-NC-SA 4.0, non-commercial use
+only). `python launch.py` builds the assets the first time
+(`web/assets/anatomy/`, a few seconds; also `python -m dvrk_sim.anatomy`).
+The instrument CAD (`web/assets/lnd/`) comes from
+[jhu-dvrk/dvrk_model](https://github.com/jhu-dvrk/dvrk_model) (MIT) and is
+downloaded once with `python -m dvrk_sim.lnd`. The anatomy works in the web
+console only.
 
 ## Look inside, like with ROS
 
@@ -174,6 +267,8 @@ Every topic below exists for both pairs: replace MTMR/PSM1 with MTML/PSM2.
 | `/MTMR/measured_js` | JointState | console → everyone, 7 MTM joints, 25 Hz |
 | `/MTMR/gripper/measured_js` | JointState | console → teleop |
 | `/footpedals/clutch` | Bool | console → both teleops |
+| `/console/operator_present` | Bool | console → both teleops: head in the viewer |
+| `/MTMR/move_cp` | PoseStamped | teleop → console: orientation the master must reach while aligning |
 | `/PSM1/servo_cp` | PoseStamped | teleop or your code → PSM1 (world frame) |
 | `/PSM1/servo_jp` | JointState | your code → PSM1 |
 | `/PSM1/jaw/servo_jp` | JointState | teleop or your code → PSM1 |
@@ -181,9 +276,12 @@ Every topic below exists for both pairs: replace MTMR/PSM1 with MTML/PSM2.
 | `/PSM1/local/measured_cp` | PoseStamped | PSM1 → everyone, RCM frame, 50 Hz |
 | `/PSM1/measured_js` | JointState | PSM1 → everyone, 50 Hz |
 | `/PSM1/collision` | String (JSON) | PSM1 → everyone: `["tissue", "wall", "PSM2"]` or `[]` |
+| `/PSM1/measured_cf` | WrenchStamped | PSM1 → teleop, contact force on the tool, world frame, 100 Hz |
+| `/MTMR/servo_cf` | WrenchStamped | teleop → console, force to render on the hand, 100 Hz |
 | `/MTMR_PSM1/state` | String (JSON) | teleop → console |
 | `/MTMR_PSM1/set_scale` | Float64 | anyone → teleop |
-| `/scene/start` | String | `"reach"` or `"handover"` → scene |
+| `/scene/start` | String | `"reach"`, `"handover"` or `"anatomy"` → scene |
+| `/scene/world` | String | scene → everyone: `"classic"` or `"anatomy"` |
 | `/ECM/measured_cp` | PoseStamped | ECM → teleops and console (camera pose) |
 | `/ECM/measured_js` | JointState | ECM → everyone (yaw, pitch, insertion, roll) |
 | `/ECM/servo_jp` | JointState | console or your code → ECM |

@@ -86,3 +86,35 @@ def test_home_is_free():
 if __name__ == "__main__":
     test_segment_distances(); test_home_is_free()
     print("collision geometry tests passed")
+
+
+def test_lnd_cad_matches_tip():
+    """The CAD links of the Large Needle Driver end exactly on the simulator's tip pose."""
+    from dvrk_sim.kinematics import JAW_LENGTH
+    from dvrk_sim.lnd import link_poses, TIP, C
+    rng = np.random.default_rng(5)
+    for _ in range(300):
+        q = np.array([*rng.uniform(-1, 1, 2), 0.1, *rng.uniform(-1.3, 1.3, 3)])
+        tip, R, _ = forward(q)
+        w, Ry = link_poses(q, 0.4, np.zeros(3))["yaw"]
+        assert np.allclose(Ry @ TIP, R @ C, atol=1e-12)
+        assert np.allclose(w + Ry @ [0, JAW_LENGTH, 0], tip, atol=1e-12)
+
+
+def test_anatomy_if_built():
+    from dvrk_sim import anatomy
+    from dvrk_sim.kinematics import ecm_forward, ECM_HOME
+    if not anatomy.available():
+        print("anatomy not built: skipped")
+        return
+    a = anatomy.Anatomy()
+    assert a.view_ok(*ecm_forward(ECM_HOME))                     # the original photo is a valid view
+    assert not a.view_ok(*ecm_forward(ECM_HOME + [0.3, 0, 0, 0]))  # looking far away shows the borders
+    for side in (-1, 1):
+        gap, _, _ = a.surface(a.start_tip(side), [0.0])
+        assert gap[0] > 0.005
+
+
+if __name__ == "__main__":
+    test_lnd_cad_matches_tip(); test_anatomy_if_built()
+    print("CAD and anatomy tests passed")
