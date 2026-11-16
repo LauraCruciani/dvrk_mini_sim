@@ -333,7 +333,11 @@ def spin_until(node, condition, timeout_sec=None):
     """Spin until condition() is true. Returns False on timeout."""
     end = None if timeout_sec is None else time.monotonic() + timeout_sec
     while ok() and not condition():
-        if end is not None and time.monotonic() > end:
+        if end is None:
+            node.spin_once(0.02)
+            continue
+        remaining = end - time.monotonic()
+        if remaining <= 0:
             return False
-        node.spin_once(0.02)
+        node.spin_once(min(0.02, remaining))     # never wait past the deadline
     return True

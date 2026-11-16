@@ -184,7 +184,11 @@ Run them in a second terminal while `python launch.py` is open.
 4. `python examples/ex4_record_and_plot.py`: record a trial, save a CSV and
    plot trajectory and speed, the starting point for skill assessment.
 
+![Output of ex4 while ex3 runs at 30 mm/s: the 3D path between the five targets and the speed profile](docs/images/ex4_plot.png)
 
+*What ex4 shows when ex3 does the reach task at 30 mm/s: straight lines
+between the targets, constant speed, and a stop on each target. A human trial
+looks much less tidy, which is the point.*
 
 `python launch.py --no-gui` runs the robots without the window, handy for
 scripted experiments.
@@ -227,5 +231,31 @@ dvrk_sim/console_gui.py classic Matplotlib console (--classic)
 web/                    the endoscope view page (index.html, app.js, three.js)
 examples/               exercises for students
 docs/images/            screenshots and diagram used in this README
+LICENSE, CITATION.cff   MIT license and how to cite this repository
 tests/                  kinematics tests for PSM and MTM (python tests/test_kinematics.py)
 ```
+
+## How to cite
+
+If you use this simulator in a course, a paper, a thesis or in software
+derived from it, please cite this repository:
+
+> Laura Cruciani, *dVRK mini simulator*, 2026. https://github.com/LauraCruciani/dvrk_mini_sim
+
+```bibtex
+@software{cruciani_dvrk_mini_sim_2026,
+  author = {Cruciani, Laura},
+  title  = {{dVRK} mini simulator},
+  year   = {2026},
+  url    = {https://github.com/LauraCruciani/dvrk_mini_sim}
+}
+```
+
+GitHub also offers these formats from the **Cite this repository** button,
+generated from [`CITATION.cff`](CITATION.cff).
+
+## License
+
+[MIT](LICENSE). You are free to use, change and share the code, as long as
+every copy keeps the copyright notice, which includes the link to this
+repository. three.js (`web/three.min.js`) is MIT-licensed by its authors.

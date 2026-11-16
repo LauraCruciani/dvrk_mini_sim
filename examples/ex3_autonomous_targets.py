@@ -12,7 +12,7 @@ them (the vessel centre lines and radii are on /scene/vessels), then
 split the targets between PSM1 and PSM2.
 """
 import json
-import os, sys
+import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
@@ -45,12 +45,15 @@ targets = list(s["targets"])            # all the targets of this trial, in orde
 try:
     for i, goal in enumerate(targets):
         # straight line, constant speed
+        last = time.monotonic()
         while np.linalg.norm(goal - cmd) > 1e-4:
+            minros.spin_until(node, lambda: False, timeout_sec=DT)
+            now = time.monotonic()                  # advance by the time really elapsed,
+            dt, last = now - last, now              # not by DT: the loop is never exactly 10 ms
             step = goal - cmd
             dist = np.linalg.norm(step)
-            cmd = cmd + step * min(1.0, SPEED * DT / dist)
+            cmd = cmd + step * min(1.0, SPEED * dt / dist)
             pub.publish(pose_to_msg(cmd, R, "PSM1_base"))
-            minros.spin_until(node, lambda: False, timeout_sec=DT)
         # hold still until the scene accepts the target
         minros.spin_until(node, lambda: s["status"].get("index", 0) > i or s["status"].get("state") != "running",
                           timeout_sec=5)

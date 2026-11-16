@@ -56,7 +56,18 @@ data = np.array(rows)
 t = data[:, 0] - data[0, 0]
 p = data[:, 1:] * 1000
 step = np.linalg.norm(np.diff(p, axis=0), axis=1)
-speed = step / np.maximum(np.diff(t), 1e-6)
+# Speed over 100 ms windows (human movements are slower than 10 Hz).
+# Dividing each 10 ms step by its dt gives a comb, not a curve: commands and
+# robot run on separate clocks, so between two samples the pose may change by
+# zero, one or two command steps (on a real robot the encoder noise would do
+# the same). Any numerical derivative needs a filter.
+WINDOW = 0.1                                                # s
+s_path = np.concatenate([[0.0], np.cumsum(step)])           # path length along the trial
+j = np.searchsorted(t, t + WINDOW)
+ok = j < len(t)
+i, j = np.nonzero(ok)[0], j[ok]
+t_speed = (t[i] + t[j]) / 2
+speed = (s_path[j] - s_path[i]) / (t[j] - t[i])
 print(f"saved {len(rows)} samples to {path}")
 print(f"duration {t[-1]:.1f} s, path {step.sum():.0f} mm, mean speed {step.sum() / t[-1]:.1f} mm/s")
 st = s["status"]
@@ -68,7 +79,7 @@ ax = fig.add_subplot(1, 2, 1, projection="3d")
 ax.plot(p[:, 0], p[:, 1], p[:, 2], lw=1)
 ax.set_title("tool-tip trajectory (mm)")
 ax2 = fig.add_subplot(1, 2, 2)
-ax2.plot(t[1:], speed, lw=0.8)
+ax2.plot(t_speed, speed, lw=0.8)
 ax2.set_xlabel("time (s)"); ax2.set_ylabel("speed (mm/s)")
 ax2.set_title("speed profile: fewer peaks = smoother movement")
 plt.tight_layout()
