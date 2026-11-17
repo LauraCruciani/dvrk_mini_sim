@@ -179,10 +179,15 @@ async function loadAnatomy() {
   const surface = new THREE.Mesh(g, new THREE.MeshPhongMaterial({ map: tex, shininess: 12, specular: 0x0c0a0a }));
   surface.receiveShadow = true;
   anat.group.add(surface);
-  anat.loaded = true;                          // the surface is enough; the CAD instruments are a bonus
+  anat.loaded = true;
   anat.loading = false;
-  let lmeta;
-  try { lmeta = await json("assets/lnd/meta.json"); } catch (e) { console.warn("no instrument CAD", e); return; }
+}
+
+// The instruments: the official CAD of the dVRK Large Needle Driver, in both worlds.
+// In the classic scene the shafts keep their colours (PSM1 orange, PSM2 green).
+const cad = { inst: {}, loaded: false };
+async function loadCad() {
+  const lmeta = await json("assets/lnd/meta.json");
   const parts = {};
   for (const k of ["pitch", "yaw", "jaw1", "jaw2"]) {
     const b = await bin(`assets/lnd/${k}.bin`), nv = lmeta[k].vertices, nt = lmeta[k].triangles;
@@ -197,13 +202,16 @@ async function loadAnatomy() {
     const shaftMat = new THREE.MeshPhongMaterial({ color: 0x2c3034, shininess: 70, specular: 0x777777 });
     const o = { shaft: shadowed(new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.2, 1, 32), shaftMat)), shaftMat };
     for (const k in parts) o[k] = shadowed(new THREE.Mesh(parts[k], steel));
-    for (const k of ["shaft", "pitch", "yaw", "jaw1", "jaw2"]) anat.group.add(o[k]);
-    anat.inst[a] = o;
+    for (const k of ["shaft", "pitch", "yaw", "jaw1", "jaw2"]) { o[k].visible = false; scene.add(o[k]); }
+    cad.inst[a] = o;
   }
+  cad.loaded = true;
 }
-function updateCad(o, a) {
+loadCad().catch(e => console.warn("no instrument CAD: simple instruments", e));
+function updateCad(o, a, arm) {
   const L = a.links;
   if (!L) return;
+  o.shaftMat.color.setHex(world === "anatomy" ? 0x2c3034 : COLORS[arm]);
   for (const k of ["pitch", "yaw", "jaw1", "jaw2"]) {
     o[k].position.copy(v3(L[k][0]));
     o[k].quaternion.copy(rotFromRows(L[k][1]));
@@ -409,7 +417,7 @@ function updateViewer(st) {
   if (!st.present) msgs.push(["Head out of the viewer: instruments locked", "warn"]);
   for (const a of ["PSM1", "PSM2"]) {
     const d = st.arms[a], t = st.teleop[SIDE_OF[a]] || {}, n = ARMNUM[a], box = armBox[a];
-    const cad = world === "anatomy" && anat.loaded && anat.inst[a];
+    const useCad = cad.loaded && cad.inst[a];
     let sub = "", cls = "";
     if (t.state === "ALIGNING") { sub = "aligning master"; cls = "notice"; }
     else if (t.state === "ALIGNED") { sub = "squeeze grip to take control"; cls = "notice"; }
@@ -426,7 +434,7 @@ function updateViewer(st) {
     if (t.state === "ALIGNING" && st.present) msgs.push([`Aligning master to arm ${n}`, "info"]);
     if (tissue.length) msgs.push([`Arm ${n} in contact with the ${organ(tissue[0])}`, "alarm"]);
     box.className = "arm" + (st.active === SIDE_OF[a] ? " active" : "");
-    box.innerHTML = `<div class="num">${n}</div><div style="flex:1"><div class="name">${cad ? "Large Needle Driver" : "Grasper"}</div>` +
+    box.innerHTML = `<div class="num">${n}</div><div style="flex:1"><div class="name">${useCad ? "Large Needle Driver" : "Grasper"}</div>` +
       `<div class="sub ${cls}">${sub || "&nbsp;"}</div><div class="rom"><div style="width:${Math.round(100 * Math.min(1, rom / 0.5))}%"></div></div></div>`;
     // arrows towards instruments that are out of view
     const ar = arrows[a];
@@ -472,12 +480,13 @@ function apply(st) {
   for (const m of vesselMeshes) m.visible = !showAnat;
   for (const a of ["PSM1", "PSM2"]) {
     const o = inst[a], d = st.arms[a];
-    const cad = world === "anatomy" && anat.loaded && !!anat.inst[a];
-    for (const k of ["shaft", "collar", "clevis", "port", "wrist"]) o[k].visible = !!d && !cad;
+    const useCad = cad.loaded && !!cad.inst[a] && !!(d && d.links);
+    for (const k of ["shaft", "collar", "clevis", "wrist"]) o[k].visible = !!d && !useCad;
+    o.port.visible = !!d;
     if (d) updateInstrument(o, d);
-    if (cad) {
-      for (const k of ["shaft", "pitch", "yaw", "jaw1", "jaw2"]) anat.inst[a][k].visible = !!d;
-      if (d) updateCad(anat.inst[a], d);
+    if (cad.loaded && cad.inst[a]) {
+      for (const k of ["shaft", "pitch", "yaw", "jaw1", "jaw2"]) cad.inst[a][k].visible = useCad;
+      if (useCad) updateCad(cad.inst[a], d, a);
     }
   }
   if (st.ecm) {
@@ -612,7 +621,7 @@ function frame() {
   renderer.setScissorTest(true);
   renderer.shadowMap.needsUpdate = true;                   // shadows once per frame, not once per view
   for (const o of overviewOnly) o.visible = false;
-  dome.visible = !anat.group.visible; scene.fog.far = 380;
+  dome.visible = true; scene.fog.far = 380;          // in the anatomy: the cavity wall past the reconstruction
   if (stereo) {                                              // left and right cameras of the endoscope
     [-1, 1].forEach((side, i) => {
       eye.copy(camera);
@@ -638,7 +647,7 @@ function frame() {
       renderer.setClearColor(0x15191d, 1); renderer.clear();
       renderer.render(scene, ovCam);
       for (const o of overviewOnly) o.visible = false;
-      dome.visible = !anat.group.visible; scene.fog.far = 380;
+      dome.visible = true; scene.fog.far = 380;
     }
   }
   renderer.setScissorTest(false);

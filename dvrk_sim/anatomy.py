@@ -33,7 +33,10 @@ SCENE = "v03_hero"
 PHOTO_U, PHOTO_V = 0.394, 0.221          # half extent of the photo in normalised image coordinates (x/z, y/z)
 GRID = (720, 480)                        # collision maps (u, v)
 TEX_PX = 1100
-VIEW_MARGIN = (0.12, 0.10)               # how far past the photo the camera may look                            # texture pixels per unit of u (the photo has ~1084)
+VIEW_MARGIN = (0.50, 0.50)               # how far past the photo the camera may look
+VIEW_MISS = 0.12                         # part of the image that may fall past the reconstruction
+# Larger values free the camera further, but from the side the 2.5D surface shows stretched
+# bands where the photo could not see (behind the gallbladder): about 10 degrees is a good compromise.                            # texture pixels per unit of u (the photo has ~1084)
 
 
 # --------------------------------------------------------------------- PLY
@@ -304,12 +307,13 @@ class Anatomy:
         return np.asarray(p, dtype=float)
 
     def view_ok(self, c, Rc, half=(PHOTO_U, PHOTO_V), steps=200, reach=0.3):
-        """True if the whole camera view falls on the reconstructed surface, near the original photo.
+        """True if (most of) the camera view falls on the reconstructed surface, near the original photo.
 
-        Every ray of the view frustum must meet the surface coming from in front of it, at a point
-        that the original camera saw within the photo plus VIEW_MARGIN: you may look a little past
-        the photo (the blurred surroundings, like the vignetting of a laparoscope), never at the
-        borders of the reconstruction.
+        A ray of the view frustum is good if it meets the surface coming from in front of it, at a
+        point that the original camera saw within the photo plus VIEW_MARGIN. At least
+        1 - VIEW_MISS of the rays must be good: you may look past the photo and, at the edge of
+        the image, a little past the reconstruction (the endoscope view then shows the wall of the
+        classic cavity behind it).
         """
         cm = self.R.T @ (np.asarray(c, dtype=float) - self.c)
         Rm = self.R.T @ np.asarray(Rc, dtype=float)
@@ -324,14 +328,13 @@ class Anatomy:
         d, _, _ = self._lookup(u, v)
         d = np.where(pts[..., 2] > 1e-4, d, np.nan)
         hit = np.isfinite(d) & (pts[..., 2] >= d)
-        if not hit.any(1).all():
-            return False                                             # a ray never meets the surface
+        good = hit.any(1)                                            # the ray meets the surface...
         k = hit.argmax(1)
         r = np.arange(len(k))
-        if (k == 0).any() or not np.isfinite(d[r, k - 1]).all():
-            return False                                             # it came from behind or from outside
+        good &= (k > 0) & np.isfinite(d[r, np.maximum(k - 1, 0)])    # ...coming from in front of it...
         lu, lv = half[0] + VIEW_MARGIN[0], half[1] + VIEW_MARGIN[1]
-        return bool((np.abs(u[r, k]) <= lu).all() and (np.abs(v[r, k]) <= lv).all())
+        good &= (np.abs(u[r, k]) <= lu) & (np.abs(v[r, k]) <= lv)    # ...not too far from the photo
+        return bool(good.mean() >= 1.0 - VIEW_MISS - 1e-9)
 
     def start_tip(self, side, standoff=0.015):
         """A safe start point for an instrument: left over the gallbladder, right over the liver.

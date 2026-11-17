@@ -26,8 +26,13 @@ installing ROS, Linux or anything beyond NumPy and Matplotlib.
 ## Install and run
 
 Python 3.8 or newer on Windows, macOS or Linux, and a recent web browser.
+Open terminal and run:
 
 ```bash
+pwd #to verify where you are 
+cd ... #path to the directory dvrk_mini_sim; do yourself a favor: right click on dvrk_mini_sim and click on copy path :)
+#EXAMPLE ON MY PC: "C:\Users\Leo\Desktop\dvrk_mini_sim"
+
 pip install -r requirements.txt
 python launch.py
 ```
@@ -216,8 +221,9 @@ Parameters: `python -m minros param set PSM1 stiffness 500`
 
 **Y** moves the robots into a real laparoscopic scene: the gallbladder, liver
 and fat of a cholecystectomy, reconstructed in 3D from a real video frame,
-with the photo as texture. The instruments become the dVRK **Large Needle
-Driver**, drawn from its official CAD.
+with the photo as texture. The instruments are the dVRK **Large Needle
+Driver**, drawn from its official CAD (in the classic scene too, with the
+coloured shafts: PSM1 orange, PSM2 green).
 
 * The surface is the tissue: collisions, force feedback and the red border
   work on it, and the HUD tells which organ you touch and counts the contacts
@@ -225,9 +231,11 @@ Driver**, drawn from its official CAD.
 * When the task starts, the camera goes home and the two instruments are
   brought just in front of the gallbladder (left) and the liver (right).
 * The reconstruction is seen from one viewpoint only, so the camera arm
-  refuses poses from which you would see its borders: you can turn it by a
-  few degrees, roll it and move it in and out. The field of view is the one
-  of the original laparoscope.
+  refuses poses from which most of the view would fall past it: you can turn
+  it by about 10 degrees, roll it and move it in and out, and at the edges of
+  the image you may see a little of the cavity wall past the reconstruction
+  (`VIEW_MARGIN` and `VIEW_MISS` in `dvrk_sim/anatomy.py`). The field of view
+  is the one of the original laparoscope.
 * N or B go back to the classic scene.
 
 It needs the SurgAware exports in `surgaware_ply_export/` (not part of this
@@ -369,7 +377,7 @@ derived from it, please cite this repository:
 
 ```bibtex
 @software{cruciani_dvrk_mini_sim_2026,
-  author = {Cruciani, Laura},
+  author = {Cruciani, Laura; Passoni, Leonardo},
   title  = {{dVRK} mini simulator},
   year   = {2026},
   url    = {https://github.com/LauraCruciani/dvrk_mini_sim}

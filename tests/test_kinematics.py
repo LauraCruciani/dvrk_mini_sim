@@ -109,7 +109,8 @@ def test_anatomy_if_built():
         return
     a = anatomy.Anatomy()
     assert a.view_ok(*ecm_forward(ECM_HOME))                     # the original photo is a valid view
-    assert not a.view_ok(*ecm_forward(ECM_HOME + [0.3, 0, 0, 0]))  # looking far away shows the borders
+    assert a.view_ok(*ecm_forward(ECM_HOME + [0.15, 0, 0, 0]))     # a little freedom to look around
+    assert not a.view_ok(*ecm_forward(ECM_HOME + [0.6, 0, 0, 0]))  # looking far away shows the borders
     for side in (-1, 1):
         gap, _, _ = a.surface(a.start_tip(side), [0.0])
         assert gap[0] > 0.005

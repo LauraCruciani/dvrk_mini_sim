@@ -386,14 +386,13 @@ class ConsoleNode(minros.Node):
                     arms[a]["rom"] = [round(float(m[i]), 3), JOINT_NAMES[i]]
                 except ValueError:
                     pass
-                if self.world == "anatomy":                # the CAD links of the Large Needle Driver
-                    try:
-                        qa, _ = inverse(self.tip[a] - base, R)
-                        L = link_poses(qa, float(self.jaw[a]), base)
-                        arms[a]["links"] = {k: r(v) if k == "shaft_end" else [r(v[0]), [r(row) for row in v[1]]]
-                                            for k, v in L.items()}
-                    except ValueError:
-                        pass
+                try:                                       # the CAD links of the Large Needle Driver
+                    qa, _ = inverse(self.tip[a] - base, R)
+                    L = link_poses(qa, float(self.jaw[a]), base)
+                    arms[a]["links"] = {k: r(v) if k == "shaft_end" else [r(v[0]), [r(row) for row in v[1]]]
+                                        for k, v in L.items()}
+                except ValueError:
+                    pass
             mtm = {}
             for s in SIDES:
                 off = np.array([CONSOLE_X[s], 0.0, 0.0])
