@@ -6,6 +6,9 @@ authors:
   - family-names: Cruciani
     given-names: Laura
     affiliation: "Politecnico di Milano"
+  - family-names: Passoni
+    given-names: Leonardo
+    affiliation: "Politecnico di Milano"
 repository-code: "https://github.com/LauraCruciani/dvrk_mini_sim"
 url: "https://github.com/LauraCruciani/dvrk_mini_sim"
 license: MIT
