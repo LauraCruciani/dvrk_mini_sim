@@ -286,8 +286,8 @@ class ConsoleNode(minros.Node):
                 self.set_remote_parameter(t, "latency_ms", float(np.clip(v, 0, 1000)))
         elif k == "n":
             self.pub_start.publish(String(data="reach"))
-        elif k == "y":
-            self.pub_start.publish(String(data="anatomy"))
+        elif k == "y":                                     # anatomy on / off
+            self.pub_start.publish(String(data="classic" if self.world == "anatomy" else "anatomy"))
         elif k == "b":
             self.pub_start.publish(String(data="handover"))
         elif k == "w":

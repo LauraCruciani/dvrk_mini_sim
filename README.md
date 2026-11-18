@@ -30,7 +30,7 @@ Open terminal and run:
 
 ```bash
 pwd #to verify where you are 
-cd ... #path to the directory dvrk_mini_sim; do yourself a favor: right click on dvrk_mini_sim and click on copy path :)
+cd """" #path to the directory dvrk_mini_sim; do yourself a favor: right click on dvrk_mini_sim and click on copy path :)
 #EXAMPLE ON MY PC: "C:\Users\Leo\Desktop\dvrk_mini_sim"
 
 pip install -r requirements.txt
@@ -100,7 +100,7 @@ changes, but "right" on screen is still "right" for your hand.*
 | `+` / `-` | artificial communication delay, 50 ms steps |
 | `N` | reach task: touch the yellow targets in order with either instrument |
 | `B` | handover task: see below |
-| `Y` | realistic anatomy: see below |
+| `Y` | realistic anatomy on / off: see below |
 | `Z` | surgeon viewer: only what a surgeon sees in the console |
 | `?` | show or hide the list of keys |
 
@@ -236,7 +236,8 @@ coloured shafts: PSM1 orange, PSM2 green).
   the image you may see a little of the cavity wall past the reconstruction
   (`VIEW_MARGIN` and `VIEW_MISS` in `dvrk_sim/anatomy.py`). The field of view
   is the one of the original laparoscope.
-* N or B go back to the classic scene.
+* Y again (or N, B) goes back to the classic scene: camera and instruments
+  return to their home pose.
 
 It needs the SurgAware exports in `surgaware_ply_export/` (not part of this
 repository: Cholec80-derived textures, CC BY-NC-SA 4.0, non-commercial use
@@ -288,7 +289,7 @@ Every topic below exists for both pairs: replace MTMR/PSM1 with MTML/PSM2.
 | `/MTMR/servo_cf` | WrenchStamped | teleop → console, force to render on the hand, 100 Hz |
 | `/MTMR_PSM1/state` | String (JSON) | teleop → console |
 | `/MTMR_PSM1/set_scale` | Float64 | anyone → teleop |
-| `/scene/start` | String | `"reach"`, `"handover"` or `"anatomy"` → scene |
+| `/scene/start` | String | `"reach"`, `"handover"`, `"anatomy"` or `"classic"` (no task) → scene |
 | `/scene/world` | String | scene → everyone: `"classic"` or `"anatomy"` |
 | `/ECM/measured_cp` | PoseStamped | ECM → teleops and console (camera pose) |
 | `/ECM/measured_js` | JointState | ECM → everyone (yaw, pitch, insertion, roll) |

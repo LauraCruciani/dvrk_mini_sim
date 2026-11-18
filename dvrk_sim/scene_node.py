@@ -41,7 +41,8 @@ import numpy as np
 import minros
 from minros.msg import (PoseStamped, PoseArray, Pose, Point, Bool, String, Header,
                         Polyline, PolylineArray, JointState)
-from .kinematics import msg_to_pose, pose_to_msg, ECM_HOME, ECM_JOINT_NAMES, PSM_BASES, shaft_rotation
+from .kinematics import (msg_to_pose, pose_to_msg, ECM_HOME, ECM_JOINT_NAMES, PSM_BASES, PSM_HOME,
+                         shaft_rotation, forward)
 from . import anatomy
 
 PARK_S = 1.5              # s to bring the instruments to their start poses in the anatomy
@@ -207,21 +208,29 @@ class Scene(minros.Node):
 
     def on_start(self, msg):
         task = (msg.data or "reach").strip().lower()
-        if task not in ("reach", "handover", "anatomy"):
-            self.get_logger().warn(f"unknown task '{task}': use reach, handover or anatomy")
+        if task not in ("reach", "handover", "anatomy", "classic"):
+            self.get_logger().warn(f"unknown task '{task}': use reach, handover, anatomy or classic")
             return
         if task == "anatomy" and not anatomy.available():
             self.get_logger().warn("the anatomy is not available: put surgaware_ply_export/ in the simulator "
                                    "folder and run python -m dvrk_sim.anatomy")
             return
         world = "anatomy" if task == "anatomy" else "classic"
+        leaving = self.world == "anatomy" and world == "classic"
         if world != self.world:
             self.world = world
             self.pub_world.publish(String(data=world))
             self.publish_vessels()
         if world == "anatomy":
             self.park()
+        elif leaving:
+            self.park(home=True)                                 # back to the classic scene
         self.organ_contacts, self.touching_organs = {}, set()
+        if task == "classic":                                    # no task: just the classic scene
+            self.task, self.state = "none", "idle"
+            self.targets, self.beads = [], []
+            self.get_logger().info("classic scene")
+            return
         self.task, self.state = task, "running"
         self.targets = self.make_targets() if task == "reach" else []
         self.beads = self.make_beads() if task == "handover" else []
@@ -231,11 +240,15 @@ class Scene(minros.Node):
         self.t0, self.elapsed = time.monotonic(), 0.0
         self.get_logger().info(f"{task} trial started")
 
-    def park(self):
-        """Bring the camera home and both instruments in front of the anatomy (teleoperation paused)."""
-        if not hasattr(self, "anat"):
-            self.anat = anatomy.Anatomy()
-        self.park_goal = {"PSM2": self.anat.start_tip(-1), "PSM1": self.anat.start_tip(+1)}
+    def park(self, home=False):
+        """Bring the camera home and both instruments in front of the anatomy, or to their home pose
+        in the classic scene (teleoperation paused meanwhile)."""
+        if home:
+            self.park_goal = {a: forward(PSM_HOME[a])[0] + PSM_BASES[a] for a in ARMS}
+        else:
+            if not hasattr(self, "anat"):
+                self.anat = anatomy.Anatomy()
+            self.park_goal = {"PSM2": self.anat.start_tip(-1), "PSM1": self.anat.start_tip(+1)}
         for t in ("MTMR_PSM1", "MTML_PSM2"):
             self.set_remote_parameter(t, "enabled", False)
         self.pub_ecm.publish(JointState(header=Header.now(), name=ECM_JOINT_NAMES,

@@ -390,7 +390,7 @@ function updateHud(st) {
     const per = Object.entries(s.organ_contacts || {}).map(([k, v]) => `${organ(k)} ${v}`).join(", ") || "none";
     task.innerHTML = s.parking ? "Anatomy: bringing the instruments in…" :
       `Anatomy: ${s.time_s.toFixed(1)} s · path ${s.path_mm.toFixed(0)} mm · clashes ${s.clashes ?? 0}<br>` +
-      `contacts per organ: <b>${per}</b>` +
+      `contacts per organ: <b>${per}</b> · <span style="opacity:.75">Y: back to the classic scene</span>` +
       ((s.touching || []).length ? `<br>touching now: <b>${s.touching.map(organ).join(", ")}</b>` : "");
   }
   else task.innerHTML = "N: reach task · B: handover task · Y: anatomy";
